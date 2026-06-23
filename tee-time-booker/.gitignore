@@ -1,5 +1,6 @@
 # Secrets — never commit real credentials
 .env
+.dashboard.env
 config.yaml
 
 # Python
@@ -14,3 +15,6 @@ venv/
 screenshots/
 *.log
 auth_state.json
+
+# Dashboard runtime state (kill-switch flag, etc.)
+state/

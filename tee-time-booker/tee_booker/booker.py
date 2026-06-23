@@ -77,18 +77,9 @@ class TeeBooker:
     # -- steps -----------------------------------------------------------------
 
     def _login(self, page) -> None:
-        s = self.cfg.selectors
-        self.log(f"Opening login page {self.cfg.club.login_url}")
-        page.goto(self.cfg.club.login_url, wait_until="domcontentloaded")
-        page.fill(s["username"], self.creds.username)
-        page.fill(s["password"], self.creds.password)
-        page.click(s["login_button"])
-        marker = s.get("login_success_marker")
-        if marker:
-            page.wait_for_selector(marker, timeout=20_000)
-        else:
-            page.wait_for_load_state("networkidle")
-        self.log("Logged in.")
+        from .session import login
+
+        login(page, self.cfg, self.creds, log=self.log)
 
     def _open_tee_sheet(self, page, play_date: date_cls) -> None:
         url = self.cfg.tee_sheet_url_for(play_date)

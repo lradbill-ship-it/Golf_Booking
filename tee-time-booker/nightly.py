@@ -22,6 +22,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta
 
+from tee_booker import state_store
 from tee_booker.booker import TeeBooker
 from tee_booker.config import Config, ConfigError, Credentials
 from tee_booker.notify import notify
@@ -61,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
+    if state_store.is_paused() and not args.plan:
+        _stamp("Automation is PAUSED (kill switch on) — doing nothing tonight.")
+        return 0
+
     try:
         cfg = Config.load(args.config)
     except ConfigError as exc:
@@ -89,6 +94,10 @@ def main(argv=None) -> int:
         f"Play date {play_date} ({weekday_key.title()}); release {release_at.isoformat()}; "
         f"times {times or 'NONE (skip)'}; players {players}."
     )
+
+    if state_store.is_skipped(play_date) and not args.plan:
+        _stamp(f"{play_date} is on the skip list — skipping (per dashboard command).")
+        return 0
 
     if not times:
         _stamp(f"No times configured for {weekday_key.title()} — skipping tonight.")
