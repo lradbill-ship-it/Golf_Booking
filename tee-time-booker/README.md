@@ -73,7 +73,24 @@ See `config.example.yaml` — every field is commented. Key sections:
 - `release` — `days_ahead`, `release_time`, `timezone`, and retry behavior.
 - `booking` — `date`, ordered `preferred_times`, `players`.
 - `selectors` — the club-specific CSS selectors.
+- `checkout` — success detection for cart-based portals (see below).
 - `runtime` — headless on/off, screenshots, debug slow-mo.
+
+### Single-click vs. cart-based portals
+
+Some portals book in one confirm click; set `confirm_button` and
+`confirmation_marker` and leave the cart selectors blank.
+
+Others (e.g. **TeeItUp**, which powers many member courses) use a multi-step
+cart checkout. When `add_to_cart_button` is set, the booker runs:
+
+> book → choose golfers (`golfer_radio`, with `{players}` substituted) → add to
+> cart → checkout (`cart_checkout_button`) → agree to terms (`terms_checkbox`) →
+> complete the purchase (`complete_purchase_button`)
+
+and treats the booking as successful once the URL leaves the checkout route
+(`checkout.success_when_url_leaves`). Playwright auto-waits for the final
+button to become enabled (it stays disabled until the terms box is checked).
 
 ## Security
 

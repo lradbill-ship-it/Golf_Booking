@@ -69,10 +69,38 @@ selectors:
   # The button/link to start booking a given slot (inside time_slot).
   book_button: "button.book, a.book-now"
 
+  # --- Single-click portals -------------------------------------------------
+  # If your portal books in one confirm click, set these two and leave the
+  # cart-flow selectors below blank.
   # The final confirmation button on the booking dialog/page.
   confirm_button: "button.confirm, button[type=submit]"
   # A selector that appears once the booking is confirmed.
   confirmation_marker: ".booking-confirmed, .confirmation-number"
+
+  # --- Cart-based portals (e.g. TeeItUp) ------------------------------------
+  # If add_to_cart_button is set, the booker uses a multi-step checkout:
+  #   book → choose golfers → add to cart → checkout → agree terms → purchase.
+  # Leave these blank for single-click portals (use confirm_button above).
+  #
+  # Radio/button to pick the group size. {players} is replaced by
+  # booking.players (so "...radio-2" selects a twosome).
+  golfer_radio: ""
+  # Optional: button to (re)select the highlighted rate, if required.
+  rate_select_button: ""
+  add_to_cart_button: ""
+  # Button to start checkout from the cart drawer/page.
+  cart_checkout_button: ""
+  # The "I agree to the terms" checkbox on the checkout page.
+  terms_checkbox: ""
+  # The final button that places the order.
+  complete_purchase_button: ""
+
+# Cart-checkout behavior — only used when the cart-flow selectors above are set.
+checkout:
+  # The booking is considered successful once the page URL no longer contains
+  # this substring (the portal navigates to a confirmation page on success).
+  success_when_url_leaves: "/checkout"
+  success_timeout_seconds: 20
 
 # Optional date picker config — only needed if tee_sheet_url has no {date}.
 date_picker:

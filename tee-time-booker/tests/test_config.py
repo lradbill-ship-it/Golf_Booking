@@ -62,6 +62,60 @@ def test_credentials_missing_raises(monkeypatch):
         Credentials.from_env(env_file="/nonexistent")
 
 
+def test_load_parses_checkout_and_cart_selectors(tmp_path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        """
+club:
+  login_url: "https://pcc-member-booking-engine.book.teeitup.com/login"
+  tee_sheet_url: "https://pcc-member-booking-engine.book.teeitup.com/?course=16516&date={date}"
+release:
+  days_ahead: 14
+booking:
+  preferred_times: ["7:00 AM"]
+  players: 2
+selectors:
+  username: "#email"
+  password: "#password"
+  login_button: "button[type=submit]"
+  time_slot: "div.card"
+  book_button: "[data-testid=teetimes_book_now_button]"
+  add_to_cart_button: "[data-testid=add-to-cart-button]"
+  golfer_radio: "[data-testid=golfer-select-radio-{players}]"
+checkout:
+  success_when_url_leaves: "/checkout"
+  success_timeout_seconds: 25
+"""
+    )
+    cfg = Config.load(str(cfg_file))
+    assert cfg.checkout["success_when_url_leaves"] == "/checkout"
+    assert cfg.checkout["success_timeout_seconds"] == 25
+    # {players} substitution is what the booker uses to pick the group size.
+    sel = cfg.selectors["golfer_radio"].replace("{players}", str(cfg.booking.players))
+    assert sel == "[data-testid=golfer-select-radio-2]"
+
+
+def test_load_defaults_checkout_to_empty(tmp_path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        """
+club:
+  login_url: "https://real-club.example-portal.org/login"
+  tee_sheet_url: "https://real-club.example-portal.org/sheet?date={date}"
+booking:
+  preferred_times: ["8:00 AM"]
+selectors:
+  username: "#u"
+  password: "#p"
+  login_button: "button"
+  time_slot: ".slot"
+  book_button: ".book"
+"""
+    )
+    cfg = Config.load(str(cfg_file))
+    assert cfg.checkout == {}
+
+
 def test_tee_sheet_url_substitutes_date():
     cfg = Config(
         club=type("C", (), {"login_url": "x", "tee_sheet_url": "https://c/ts?d={date}", "date_url_format": "%Y-%m-%d"})(),

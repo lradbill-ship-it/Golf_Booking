@@ -116,6 +116,9 @@ class Config:
     selectors: dict
     date_picker: dict
     runtime: RuntimeConfig
+    # Optional multi-step checkout settings (e.g. TeeItUp cart flow). Empty for
+    # portals that book in a single confirm click.
+    checkout: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
 
     @classmethod
@@ -134,6 +137,7 @@ class Config:
         runtime = RuntimeConfig(**(data.get("runtime") or {}))
         selectors = data.get("selectors") or {}
         date_picker = data.get("date_picker") or {}
+        checkout = data.get("checkout") or {}
 
         cfg = cls(
             club=club,
@@ -142,6 +146,7 @@ class Config:
             selectors=selectors,
             date_picker=date_picker,
             runtime=runtime,
+            checkout=checkout,
             raw=data,
         )
         cfg.validate()
