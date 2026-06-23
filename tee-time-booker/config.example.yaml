@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# tee-time-booker configuration
+#
+# Copy this file to "config.yaml" and adjust for your club's portal.
+# config.yaml is gitignored (it may contain a club-specific URL you'd rather
+# not publish). Credentials do NOT go here — they live in .env.
+#
+# The CSS selectors below are the part that is specific to YOUR club's booking
+# portal. The defaults are placeholders. Fill them in by opening your portal in
+# a browser, right-clicking the relevant field, and choosing "Inspect", or by
+# running:  python book.py inspect   (opens a browser so you can capture them).
+# ---------------------------------------------------------------------------
+
+club:
+  # The page that shows the username/password login form.
+  login_url: "https://your-club-portal.example.com/login"
+
+  # The tee-sheet / booking page. {date} is substituted with the play date.
+  # Many portals accept the date in the URL; if yours uses a date picker
+  # instead, leave the {date} token out and configure date_picker below.
+  tee_sheet_url: "https://your-club-portal.example.com/teesheet?date={date}"
+
+  # strftime format used to render {date} above (e.g. 2026-07-07).
+  date_url_format: "%Y-%m-%d"
+
+# When are tee times released? The booker computes the exact release moment as:
+#   (play_date - days_ahead) at release_time, in the given timezone,
+# and fires at that instant.
+release:
+  days_ahead: 14          # times open 2 weeks out
+  release_time: "00:01"   # 12:01 AM
+  timezone: "America/New_York"  # handles EST/EDT automatically
+  # How early (seconds) to wake up and be ready before the release instant.
+  warmup_seconds: 30
+  # After the release instant, keep retrying for this long if slots aren't
+  # immediately visible or a click fails.
+  retry_window_seconds: 90
+  retry_interval_seconds: 1.0
+
+# What you want to book.
+booking:
+  # Preferred play date — overridden by the --date CLI flag if given.
+  # Format: YYYY-MM-DD. Leave blank to require --date on the command line.
+  date: ""
+  # Ordered list of acceptable start times. The booker grabs the first one
+  # that is available, trying them top to bottom.
+  preferred_times:
+    - "08:00 AM"
+    - "08:10 AM"
+    - "08:20 AM"
+    - "07:50 AM"
+  players: 4
+
+# CSS selectors for your club's portal. Replace the placeholders.
+selectors:
+  username: "#username"
+  password: "#password"
+  login_button: "button[type=submit]"
+  # A selector that only appears AFTER a successful login (used to confirm
+  # the login worked before proceeding).
+  login_success_marker: ".member-dashboard, .logout"
+
+  # On the tee sheet, the row/cell representing a bookable slot. The booker
+  # finds the one whose visible text contains a preferred time.
+  time_slot: ".teetime-slot, [data-time]"
+  # The element that holds the slot's time text (relative to time_slot, or a
+  # global selector). Used to match against preferred_times.
+  time_slot_label: ".slot-time"
+  # The button/link to start booking a given slot (inside time_slot).
+  book_button: "button.book, a.book-now"
+
+  # The final confirmation button on the booking dialog/page.
+  confirm_button: "button.confirm, button[type=submit]"
+  # A selector that appears once the booking is confirmed.
+  confirmation_marker: ".booking-confirmed, .confirmation-number"
+
+# Optional date picker config — only needed if tee_sheet_url has no {date}.
+date_picker:
+  enabled: false
+  open_button: ""     # opens the calendar
+  day_cell: ""        # a day cell; {day} is substituted with the day number
+
+runtime:
+  headless: true            # set false to watch it work while testing
+  screenshot_on_error: true
+  screenshot_dir: "screenshots"
+  # Slow down actions by N ms (helpful while debugging selectors).
+  slow_mo_ms: 0

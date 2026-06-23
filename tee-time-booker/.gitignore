@@ -1,0 +1,16 @@
+# Secrets — never commit real credentials
+.env
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Playwright / runtime artifacts
+screenshots/
+*.log
+auth_state.json
