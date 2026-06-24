@@ -53,7 +53,9 @@ class ReleaseConfig:
     timezone: str = "America/New_York"
     warmup_seconds: int = 30
     retry_window_seconds: int = 90
-    retry_interval_seconds: float = 1.0
+    # Seconds between retries. Keep this gentle — reloading too fast trips the
+    # site's rate limiter (Cloudflare 1015) and gets the booker temporarily banned.
+    retry_interval_seconds: float = 6.0
 
     @property
     def tz(self) -> ZoneInfo:

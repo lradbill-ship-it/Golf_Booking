@@ -121,6 +121,16 @@ class TeeBooker:
         attempt = 0
         while True:
             attempt += 1
+            if self._is_blocked(page):
+                shot = self._screenshot(page, "blocked")
+                return BookingResult(
+                    False,
+                    message=(
+                        "Blocked by the site's rate limiter (Cloudflare 1015). Stopped "
+                        "so as not to make it worse — try again in a few minutes."
+                    ),
+                    screenshot=shot,
+                )
             slot = self._find_available_slot(page)
             if slot is not None:
                 label = self._slot_label_text(slot)
@@ -163,6 +173,19 @@ class TeeBooker:
             page.reload(wait_until="domcontentloaded")
 
     # -- slot helpers ----------------------------------------------------------
+
+    _BLOCK_MARKERS = (
+        "rate limited", "error 1015", "banned you temporarily",
+        "attention required", "just a moment",
+    )
+
+    def _is_blocked(self, page) -> bool:
+        """True if the page is a Cloudflare rate-limit / challenge interstitial."""
+        try:
+            text = (page.inner_text("body") or "").lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return any(m in text for m in self._BLOCK_MARKERS)
 
     def _find_available_slot(self, page):
         """Return the first slot element matching a preferred time, or None."""
