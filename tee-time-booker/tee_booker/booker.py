@@ -105,7 +105,17 @@ class TeeBooker:
             page.wait_for_load_state("networkidle")
 
     def _attempt_booking(self, page) -> BookingResult:
-        """Race loop: repeatedly look for a preferred slot and book it."""
+        """Race for a preferred slot, then book exactly ONE.
+
+        Safety guarantee — at most one booking per run:
+        the loop only retries while *no* slot has been purchased. `_book_slot`
+        returns one of:
+          "booked" — success; we return immediately.
+          "stop"   — a purchase was attempted but not confirmed (or the cart
+                     looked wrong). We do NOT retry, to avoid a double booking.
+          "retry"  — the attempt failed *before* any purchase, so no booking was
+                     made; it's safe to try again (e.g. the next preferred time).
+        """
         deadline = time.monotonic() + self.cfg.release.retry_window_seconds
         interval = self.cfg.release.retry_interval_seconds
         attempt = 0
@@ -114,8 +124,9 @@ class TeeBooker:
             slot = self._find_available_slot(page)
             if slot is not None:
                 label = self._slot_label_text(slot)
-                self.log(f"Found available slot {label!r} (attempt {attempt}); booking...")
-                if self._book_slot(page, slot):
+                self.log(f"Found available slot {label!r} (attempt {attempt}); booking once...")
+                status = self._book_slot(page, slot)
+                if status == "booked":
                     shot = self._screenshot(page, "confirmed")
                     return BookingResult(
                         True,
@@ -123,7 +134,20 @@ class TeeBooker:
                         message=f"Booked {label} for {self.cfg.booking.players} players.",
                         screenshot=shot,
                     )
-                self.log("Book click did not confirm; retrying...")
+                if status == "stop":
+                    shot = self._screenshot(page, "unconfirmed")
+                    return BookingResult(
+                        False,
+                        booked_time=label,
+                        message=(
+                            f"Attempted to book {label} but couldn't confirm it "
+                            "(or the cart held extra items). Stopping WITHOUT "
+                            "retrying to avoid a possible double booking — please "
+                            "check the portal."
+                        ),
+                        screenshot=shot,
+                    )
+                self.log(f"Couldn't secure {label} (no booking made); will retry.")
             if time.monotonic() >= deadline:
                 shot = self._screenshot(page, "no_slot")
                 return BookingResult(
@@ -173,10 +197,16 @@ class TeeBooker:
     def _normalize(s: str) -> str:
         return s.lower().replace(" ", "").replace(":", "")
 
-    def _book_slot(self, page, slot) -> bool:
+    def _book_slot(self, page, slot) -> str:
+        """Book one slot. Returns "booked", "stop", or "retry" (see _attempt_booking)."""
         s = self.cfg.selectors
-        # Open this slot's booking panel / detail.
-        slot.locator(s["book_button"]).first.click()
+        # Open this slot's booking panel / detail. A failure here means nothing
+        # was purchased (e.g. the slot was just taken), so it's safe to retry.
+        try:
+            slot.locator(s["book_button"]).first.click()
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Couldn't open the booking panel ({exc}); safe to retry.")
+            return "retry"
 
         # Multi-step cart checkout (e.g. TeeItUp): select golfers, add to cart,
         # check out, agree to terms, and complete the purchase.
@@ -195,85 +225,112 @@ class TeeBooker:
         if marker:
             try:
                 page.wait_for_selector(marker, timeout=15_000)
-                return True
+                return "booked"
             except Exception:  # noqa: BLE001
-                return False
+                # We clicked confirm but couldn't verify — don't retry blindly.
+                return "stop"
         # No confirmation marker configured — assume success after the clicks.
         page.wait_for_load_state("networkidle")
-        return True
+        return "booked"
 
-    def _book_via_cart(self, page) -> bool:
+    def _book_via_cart(self, page) -> str:
         """Drive a cart-based checkout (book → golfers → cart → terms → buy).
 
-        Each step's selector lives in config so the same flow adapts to similar
-        portals. Returns True once the page leaves the checkout route, which is
-        how a completed order is detected.
+        Returns "booked" / "stop" / "retry" (see _attempt_booking). It submits
+        the purchase at most once and never returns "retry" after that point, so
+        a single run can never create more than one booking.
         """
         s = self.cfg.selectors
-
-        # 1) Choose number of golfers, if the portal asks. {players} is filled
-        #    from booking.players (e.g. golfer-select-radio-2 for a twosome).
-        golfer_tpl = s.get("golfer_radio")
-        players = self.cfg.booking.players
-        if golfer_tpl and players:
-            sel = golfer_tpl.replace("{players}", str(players))
-            try:
-                page.wait_for_selector(sel, timeout=10_000)
-                page.check(sel)
-            except Exception:  # noqa: BLE001
-                # The slot may not allow this group size; fall back to its default.
-                self.log(f"Could not select {players} golfer(s); using the default.")
-
-        # 2) Some portals require explicitly selecting the (pre-highlighted) rate.
-        rate = s.get("rate_select_button")
-        if rate:
-            try:
-                if page.locator(rate).count() > 0:
-                    page.click(rate)
-            except Exception:  # noqa: BLE001
-                pass  # rate already selected
-
-        # 3) Add to cart.
-        page.click(s["add_to_cart_button"])
-
-        # 4) Check out from the cart drawer/page.
-        checkout_btn = s.get("cart_checkout_button")
-        if checkout_btn:
-            page.wait_for_selector(checkout_btn, timeout=15_000)
-            page.click(checkout_btn)
-
-        # 5) Agree to terms & conditions, if there's a checkbox. The selector
-        #    may point at the styled wrapper (common with MUI), so prefer a real
-        #    checkbox input inside it and fall back to clicking the wrapper.
-        terms = s.get("terms_checkbox")
-        if terms:
-            try:
-                page.wait_for_selector(terms, timeout=20_000)
-                inner = page.locator(f"{terms} input[type='checkbox']")
-                target = inner if inner.count() > 0 else page.locator(terms)
-                try:
-                    target.first.check()
-                except Exception:  # noqa: BLE001
-                    page.locator(terms).first.click()
-            except Exception:  # noqa: BLE001
-                self.log("Terms checkbox not found or already accepted.")
-
-        # 6) Complete the purchase. Playwright auto-waits for the button to
-        #    become enabled (it's disabled until terms are accepted).
-        complete = s.get("complete_purchase_button")
-        if complete:
-            page.wait_for_selector(complete, timeout=15_000)
-            page.click(complete)
-
-        # 7) Success = we leave the checkout route (the portal navigates to a
-        #    confirmation page). On failure the page stays on checkout.
-        leaves = (self.cfg.checkout or {}).get("success_when_url_leaves", "/checkout")
-        timeout_ms = int((self.cfg.checkout or {}).get("success_timeout_seconds", 20)) * 1000
+        attempted_purchase = False
         try:
-            page.wait_for_url(lambda url: leaves not in url, timeout=timeout_ms)
-            return True
-        except Exception:  # noqa: BLE001
-            return False
+            # 1) Choose number of golfers, if the portal asks. {players} is filled
+            #    from booking.players (e.g. golfer-select-radio-2 for a twosome).
+            golfer_tpl = s.get("golfer_radio")
+            players = self.cfg.booking.players
+            if golfer_tpl and players:
+                sel = golfer_tpl.replace("{players}", str(players))
+                try:
+                    page.wait_for_selector(sel, timeout=10_000)
+                    page.check(sel)
+                except Exception:  # noqa: BLE001
+                    # The slot may not allow this group size; use its default.
+                    self.log(f"Could not select {players} golfer(s); using the default.")
+
+            # 2) Some portals require explicitly selecting the (pre-highlighted) rate.
+            rate = s.get("rate_select_button")
+            if rate:
+                try:
+                    if page.locator(rate).count() > 0:
+                        page.click(rate)
+                except Exception:  # noqa: BLE001
+                    pass  # rate already selected
+
+            # 3) Add to cart.
+            page.click(s["add_to_cart_button"])
+
+            # SAFETY: only ever check out the single item we just added. If the
+            # cart already held items (e.g. a leftover from an interrupted run),
+            # abort rather than risk booking several at once.
+            cart_item_sel = s.get("cart_item")
+            if cart_item_sel:
+                try:
+                    page.wait_for_selector(cart_item_sel, timeout=10_000)
+                    n_items = page.locator(cart_item_sel).count()
+                except Exception:  # noqa: BLE001
+                    n_items = 1  # couldn't count; add-to-cart guarantees >=1
+                if n_items > 1:
+                    self.log(
+                        f"Cart holds {n_items} items — aborting checkout to avoid "
+                        "multiple bookings. Clear the cart on the portal and retry."
+                    )
+                    return "stop"
+
+            # 4) Check out from the cart drawer/page.
+            checkout_btn = s.get("cart_checkout_button")
+            if checkout_btn:
+                page.wait_for_selector(checkout_btn, timeout=15_000)
+                page.click(checkout_btn)
+
+            # 5) Agree to terms & conditions, if there's a checkbox. The selector
+            #    may point at the styled wrapper (common with MUI), so prefer a
+            #    real checkbox input inside it and fall back to the wrapper.
+            terms = s.get("terms_checkbox")
+            if terms:
+                try:
+                    page.wait_for_selector(terms, timeout=20_000)
+                    inner = page.locator(f"{terms} input[type='checkbox']")
+                    target = inner if inner.count() > 0 else page.locator(terms)
+                    try:
+                        target.first.check()
+                    except Exception:  # noqa: BLE001
+                        page.locator(terms).first.click()
+                except Exception:  # noqa: BLE001
+                    self.log("Terms checkbox not found or already accepted.")
+
+            # 6) Complete the purchase — the point of no return. Once we click
+            #    this, we never retry (any later error returns "stop").
+            complete = s.get("complete_purchase_button")
+            if complete:
+                page.wait_for_selector(complete, timeout=15_000)
+                attempted_purchase = True
+                page.click(complete)
+
+            # 7) Success = we leave the checkout route (portal shows confirmation).
+            leaves = (self.cfg.checkout or {}).get("success_when_url_leaves", "/checkout")
+            timeout_ms = int((self.cfg.checkout or {}).get("success_timeout_seconds", 20)) * 1000
+            try:
+                page.wait_for_url(lambda url: leaves not in url, timeout=timeout_ms)
+                return "booked"
+            except Exception:  # noqa: BLE001
+                # Clicked purchase but couldn't confirm — never retry (might have
+                # gone through). Caller reports and stops.
+                return "stop" if attempted_purchase else "retry"
+        except Exception as exc:  # noqa: BLE001
+            if attempted_purchase:
+                self.log(f"Error after submitting the purchase ({exc}); not retrying.")
+                return "stop"
+            self.log(f"Booking failed before purchase ({exc}); safe to retry.")
+            return "retry"
 
     # -- misc ------------------------------------------------------------------
 

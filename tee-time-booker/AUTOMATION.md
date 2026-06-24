@@ -23,6 +23,21 @@ This machine is set up to book tee times automatically at the 12:01 AM release.
   Wakes the Mac at 11:55 PM and sleeps it at 12:15 AM, every day.
   Verify with `pmset -g sched`. Clear with `sudo pmset repeat cancel`.
 
+## Safety — one booking per run
+
+Each run books **at most one** tee time:
+
+- The booker stops the moment one booking succeeds.
+- It submits a purchase at most once and **never retries after that point** — if
+  it can't confirm the result, it stops and reports rather than risk a double.
+- Before checkout it verifies the cart holds only the one item it just added
+  (a leftover from an interrupted run makes it abort, not over-book).
+- The nightly job fires once per night (no KeepAlive), and the dashboard never
+  books — it only views/cancels reservations and arms/skips.
+
+To book more than one day, that's what the weekly schedule is for: one booking
+per night for each upcoming play date. (Covered by `test_booking_safety.py`.)
+
 ## Requirements / caveats
 
 - **Stay logged in** (screen may be **locked**, but don't fully log out) — a

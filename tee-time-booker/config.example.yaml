@@ -88,6 +88,10 @@ selectors:
   # Optional: button to (re)select the highlighted rate, if required.
   rate_select_button: ""
   add_to_cart_button: ""
+  # Optional safety: a selector that matches one element PER item in the cart.
+  # If set and the cart ever holds more than one item at checkout, the booker
+  # aborts instead of booking several at once.
+  cart_item: ""
   # Button to start checkout from the cart drawer/page.
   cart_checkout_button: ""
   # The "I agree to the terms" checkbox on the checkout page.
