@@ -68,6 +68,9 @@ selectors:
   time_slot_label: ".slot-time"
   # The button/link to start booking a given slot (inside time_slot).
   book_button: "button.book, a.book-now"
+  # Optional: a per-slot label of allowed party sizes (e.g. "1", "1 or 2",
+  # "2 - 4"). If set, slots that can't fit booking.players are skipped.
+  slot_players_label: ""
 
   # --- Single-click portals -------------------------------------------------
   # If your portal books in one confirm click, set these two and leave the

@@ -2,7 +2,27 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tee_booker.booker import TeeBooker
+
+
+@pytest.mark.parametrize("label,players,expected", [
+    ("1 or 2", 2, True),
+    ("1 or 2", 1, True),
+    ("1 or 2", 3, False),
+    ("2 - 4", 2, True),
+    ("2 - 4", 1, False),
+    ("2 - 4", 4, True),
+    ("2-4", 3, True),
+    ("1", 1, True),
+    ("1", 2, False),     # a single-golfer slot must be rejected for a twosome
+    ("1 - 3", 2, True),
+    ("1 - 3", 4, False),
+    ("", 2, True),       # unknown label -> don't over-filter
+])
+def test_players_allowed(label, players, expected):
+    assert TeeBooker._players_allowed(label, players) is expected
 
 
 class _FakePage:

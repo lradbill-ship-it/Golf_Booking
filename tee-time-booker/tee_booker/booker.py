@@ -11,6 +11,7 @@ Playwright is imported lazily inside `run()` so the rest of the package
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime
@@ -188,7 +189,11 @@ class TeeBooker:
         return any(m in text for m in self._BLOCK_MARKERS)
 
     def _find_available_slot(self, page):
-        """Return the first slot element matching a preferred time, or None."""
+        """Return the first slot matching a preferred time that also fits the party.
+
+        Skips slots whose allowed party size doesn't include booking.players, so
+        a "1 golfer only" slot is never chosen for a twosome.
+        """
         s = self.cfg.selectors
         for wanted in self.cfg.booking.preferred_times:
             slots = page.locator(s["time_slot"])
@@ -197,10 +202,37 @@ class TeeBooker:
                 slot = slots.nth(i)
                 label = self._slot_label_text(slot)
                 if label and self._times_match(wanted, label):
-                    # Must contain a usable book button to count as available.
-                    if slot.locator(s["book_button"]).count() > 0:
+                    # Must be bookable AND allow our group size.
+                    if slot.locator(s["book_button"]).count() > 0 and self._slot_allows_players(slot):
                         return slot
         return None
+
+    def _slot_allows_players(self, slot) -> bool:
+        """Whether this slot's allowed party size includes booking.players."""
+        sel = self.cfg.selectors.get("slot_players_label")
+        players = self.cfg.booking.players
+        if not sel or not players:
+            return True
+        try:
+            loc = slot.locator(sel)
+            if loc.count() == 0:
+                return True  # unknown — don't over-filter
+            return self._players_allowed(loc.first.inner_text(), players)
+        except Exception:  # noqa: BLE001
+            return True
+
+    @staticmethod
+    def _players_allowed(label_text: str, players: int) -> bool:
+        """Parse a party-size label like '1 or 2', '2 - 4', or '1'."""
+        txt = (label_text or "").lower()
+        nums = [int(n) for n in re.findall(r"\d+", txt)]
+        if not nums:
+            return True  # unknown format — don't over-filter
+        if "or" in txt:
+            return players in nums          # e.g. "1 or 2"
+        if len(nums) >= 2:
+            return nums[0] <= players <= nums[-1]  # e.g. "2 - 4"
+        return players == nums[0]           # e.g. "1"
 
     def _slot_label_text(self, slot) -> str:
         s = self.cfg.selectors
@@ -276,8 +308,10 @@ class TeeBooker:
                     page.wait_for_selector(sel, timeout=10_000)
                     page.check(sel)
                 except Exception:  # noqa: BLE001
-                    # The slot may not allow this group size; use its default.
-                    self.log(f"Could not select {players} golfer(s); using the default.")
+                    # Never silently book the wrong party size — skip this slot.
+                    # Nothing has been purchased yet, so it's safe to retry.
+                    self.log(f"Couldn't select {players} golfer(s) here; skipping (no booking made).")
+                    return "retry"
 
             # 2) Some portals require explicitly selecting the (pre-highlighted) rate.
             rate = s.get("rate_select_button")
