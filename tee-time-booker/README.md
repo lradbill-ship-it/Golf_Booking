@@ -107,5 +107,24 @@ pip install pytest
 pytest -q
 ```
 
-The tests cover config/credential handling and the release-time math
-(including EST↔EDT), and don't require a browser.
+The unit tests cover config/credential handling, the release-time math
+(including EST↔EDT), the party-size parser, and the NL commands — and don't
+require a browser.
+
+### End-to-end tests
+
+`tests/e2e/` drives the **real** booker and a headless Chromium against a local
+mock portal (no real club involved), proving login → slot-matching → booking →
+confirmation, the one-booking-per-run guarantee, and party-size filtering all
+work against a live DOM. They need the browser stack:
+
+```bash
+pip install pytest flask playwright
+playwright install chromium
+pytest tests/e2e -q
+```
+
+They **skip automatically** when Playwright/Flask/Chromium aren't available, so
+a plain `pytest -q` stays green on a machine without the browser installed. If a
+non-default Chromium build is pre-installed, point the tests at it with
+`E2E_CHROMIUM_PATH=/path/to/chrome pytest tests/e2e`.
