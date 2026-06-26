@@ -71,5 +71,18 @@ launchctl load   -w ~/Library/LaunchAgents/com.laneradbill.teebooker.nightly.pli
 ## After it runs
 
 Confirm bookings on the portal under **Reservations**, or watch `logs/nightly.log`
-for a `✅`/`❌` line. Each successful booking also saves a confirmation screenshot
+for a status line. Each successful booking also saves a confirmation screenshot
 under `screenshots/`.
+
+The leading icon tells you what happened at a glance:
+
+- `✅` — booked. (Exit 0.)
+- `ℹ️` — the tee sheet was **empty**: the club hadn't released times for that
+  date yet, so there was nothing to book. This is **not** a failure (exit 0) —
+  a normal outcome on nights the club doesn't open the date you're after.
+- `❌` — a real problem: times were released but no preferred slot was bookable
+  in the retry window, a rate-limit block, an unconfirmed purchase, or an error.
+  (Exit 1; usually a screenshot is saved.)
+
+So a `ℹ️` line means the booker ran fine and simply had nothing to do — no need
+to investigate.

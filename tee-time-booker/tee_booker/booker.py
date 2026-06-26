@@ -28,6 +28,10 @@ class BookingResult:
     booked_time: Optional[str] = None
     message: str = ""
     screenshot: Optional[str] = None
+    # A coarse classification of what happened, so callers can react differently
+    # to "the club hadn't released times yet" (benign) versus a real miss/error.
+    # One of: booked, no_release, missed, blocked, unconfirmed, error, dry_run.
+    outcome: str = ""
 
 
 class TeeBooker:
@@ -57,19 +61,22 @@ class TeeBooker:
                     slot = self._find_available_slot(page)
                     if slot is None:
                         return BookingResult(
-                            False, message="DRY RUN: no preferred time visible yet."
+                            False,
+                            message="DRY RUN: no preferred time visible yet.",
+                            outcome="dry_run",
                         )
                     label = self._slot_label_text(slot)
                     return BookingResult(
                         True,
                         booked_time=label,
                         message=f"DRY RUN: would book {label!r} (no click made).",
+                        outcome="dry_run",
                     )
                 return self._attempt_booking(page)
             except Exception as exc:  # noqa: BLE001
                 shot = self._screenshot(page, "error")
                 return BookingResult(
-                    False, message=f"Error: {exc}", screenshot=shot
+                    False, message=f"Error: {exc}", screenshot=shot, outcome="error"
                 )
             finally:
                 context.close()
@@ -120,6 +127,10 @@ class TeeBooker:
         deadline = time.monotonic() + self.cfg.release.retry_window_seconds
         interval = self.cfg.release.retry_interval_seconds
         attempt = 0
+        # Track whether the tee sheet ever showed *any* slot. If it stayed empty
+        # for the whole window, the club simply hadn't released times yet — a
+        # benign "nothing to do" outcome, not a missed booking.
+        saw_any_slots = False
         while True:
             attempt += 1
             if self._is_blocked(page):
@@ -131,7 +142,10 @@ class TeeBooker:
                         "so as not to make it worse — try again in a few minutes."
                     ),
                     screenshot=shot,
+                    outcome="blocked",
                 )
+            if self._slot_count(page) > 0:
+                saw_any_slots = True
             slot = self._find_available_slot(page)
             if slot is not None:
                 label = self._slot_label_text(slot)
@@ -144,6 +158,7 @@ class TeeBooker:
                         booked_time=label,
                         message=f"Booked {label} for {self.cfg.booking.players} players.",
                         screenshot=shot,
+                        outcome="booked",
                     )
                 if status == "stop":
                     shot = self._screenshot(page, "unconfirmed")
@@ -157,18 +172,32 @@ class TeeBooker:
                             "check the portal."
                         ),
                         screenshot=shot,
+                        outcome="unconfirmed",
                     )
                 self.log(f"Couldn't secure {label} (no booking made); will retry.")
             if time.monotonic() >= deadline:
+                window = self.cfg.release.retry_window_seconds
+                if not saw_any_slots:
+                    # The sheet never showed a single slot — the club hadn't
+                    # released times for this date yet. Not a failure.
+                    return BookingResult(
+                        False,
+                        message=(
+                            f"Tee sheet stayed empty — the club hadn't released times "
+                            f"for this date yet ({attempt} checks over {window}s). "
+                            "Nothing to book; this isn't an error."
+                        ),
+                        outcome="no_release",
+                    )
                 shot = self._screenshot(page, "no_slot")
                 return BookingResult(
                     False,
                     message=(
-                        f"No preferred time became bookable within "
-                        f"{self.cfg.release.retry_window_seconds}s "
-                        f"({attempt} attempts)."
+                        f"Times were released but no preferred slot became bookable "
+                        f"within {window}s ({attempt} attempts)."
                     ),
                     screenshot=shot,
+                    outcome="missed",
                 )
             time.sleep(interval)
             page.reload(wait_until="domcontentloaded")
@@ -187,6 +216,13 @@ class TeeBooker:
         except Exception:  # noqa: BLE001
             return False
         return any(m in text for m in self._BLOCK_MARKERS)
+
+    def _slot_count(self, page) -> int:
+        """How many tee-time slots are currently rendered (0 = empty sheet)."""
+        try:
+            return page.locator(self.cfg.selectors["time_slot"]).count()
+        except Exception:  # noqa: BLE001
+            return 0
 
     def _find_available_slot(self, page):
         """Return the first slot matching a preferred time that also fits the party.

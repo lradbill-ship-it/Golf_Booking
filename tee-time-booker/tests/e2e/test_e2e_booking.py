@@ -70,3 +70,28 @@ def test_refuses_to_book_a_too_small_slot(make_cfg, mock_server):
 
     assert not result.success
     assert _bookings(mock_server) == []  # zero bookings made
+
+
+def test_empty_sheet_reports_no_release_not_a_failure(make_cfg, mock_server):
+    # The club hasn't released times: the sheet renders with zero slots. The
+    # booker should report this as "no_release" (benign), not a missed booking.
+    urllib.request.urlopen(mock_server + "/mode?empty=1", timeout=2)
+    cfg = make_cfg(["08:00 AM"], players=2)
+    cfg.release.retry_window_seconds = 2  # keep the test quick
+    result = _run(cfg)
+
+    assert not result.success
+    assert result.outcome == "no_release"
+    assert _bookings(mock_server) == []
+
+
+def test_released_but_unmatched_reports_missed(make_cfg, mock_server):
+    # Times ARE on the sheet, but none match the preference — that's a real
+    # miss ("missed"), distinct from the empty-sheet "no_release" case.
+    cfg = make_cfg(["06:00 AM"], players=2)  # 06:00 isn't on the sheet
+    cfg.release.retry_window_seconds = 2
+    result = _run(cfg)
+
+    assert not result.success
+    assert result.outcome == "missed"
+    assert _bookings(mock_server) == []

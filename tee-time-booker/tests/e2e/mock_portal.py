@@ -18,6 +18,10 @@ app.secret_key = "test-only-not-a-secret"
 # In-memory record of bookings, so tests can assert the one-booking guarantee.
 BOOKINGS = []
 
+# When True, the tee sheet renders with no slots at all — simulating a club that
+# hasn't released times for the date yet.
+STATE = {"empty": False}
+
 USERNAME = "member123"
 PASSWORD = "hunter2"
 
@@ -73,9 +77,17 @@ def count():
 
 @app.route("/reset")
 def reset():
-    """Test hook: clear all bookings between test cases."""
+    """Test hook: clear all bookings and reset the sheet between test cases."""
     BOOKINGS.clear()
+    STATE["empty"] = False
     return {"count": 0}
+
+
+@app.route("/mode")
+def mode():
+    """Test hook: /mode?empty=1 makes the tee sheet render with no slots."""
+    STATE["empty"] = request.args.get("empty") == "1"
+    return {"empty": STATE["empty"]}
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -93,9 +105,10 @@ def teesheet():
     if "user" not in session:
         return redirect("/login")
     booked = {b["time"] for b in BOOKINGS}
+    slots = [] if STATE["empty"] else SLOTS
     return render_template_string(
         TEESHEET_HTML, user=session["user"], date=request.args.get("date"),
-        slots=SLOTS, booked=booked,
+        slots=slots, booked=booked,
     )
 
 

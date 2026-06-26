@@ -30,7 +30,7 @@ class _FakePage:
         pass
 
 
-def _booker(book_returns, find_slot=True, window=0.5):
+def _booker(book_returns, find_slot=True, window=0.5, slot_count=1):
     """A TeeBooker with the Playwright-touching steps stubbed out."""
     b = TeeBooker.__new__(TeeBooker)  # bypass __init__ (no browser/config needed)
     b.cfg = SimpleNamespace(
@@ -42,6 +42,7 @@ def _booker(book_returns, find_slot=True, window=0.5):
     returns = list(book_returns)
 
     b._find_available_slot = lambda page: (object() if find_slot else None)
+    b._slot_count = lambda page: slot_count  # how many slots the sheet shows
 
     def fake_book(page, slot):
         b.book_calls += 1
@@ -78,9 +79,19 @@ def test_safe_retry_before_purchase_then_books_once():
     assert b.book_calls == 3
 
 
-def test_no_slot_never_books():
-    b = _booker([], find_slot=False, window=0.05)
+def test_empty_sheet_reports_no_release():
+    # Sheet shows zero slots the whole window -> club hadn't released times.
+    b = _booker([], find_slot=False, window=0.05, slot_count=0)
     res = b._attempt_booking(_FakePage())
     assert res.success is False
     assert b.book_calls == 0
-    assert "no preferred time" in res.message.lower()
+    assert res.outcome == "no_release"
+
+
+def test_released_but_unmatched_reports_missed():
+    # Slots ARE on the sheet but none are bookable for us -> a real miss.
+    b = _booker([], find_slot=False, window=0.05, slot_count=3)
+    res = b._attempt_booking(_FakePage())
+    assert res.success is False
+    assert b.book_calls == 0
+    assert res.outcome == "missed"

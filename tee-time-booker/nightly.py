@@ -128,14 +128,19 @@ def main(argv=None) -> int:
         _stamp("Release! Attempting booking now.")
 
     result = TeeBooker(cfg, creds, log=_stamp).run(play_date, dry_run=args.dry_run)
-    msg = (
-        f"{'✅' if result.success else '❌'} {play_date} ({weekday_key.title()}): "
-        f"{result.message}"
-    )
+    # "no_release" means the club simply hadn't opened the sheet — report it
+    # calmly (ℹ️) and exit 0, so a quiet night doesn't look like a failure.
+    if result.success:
+        icon = "✅"
+    elif result.outcome == "no_release":
+        icon = "ℹ️"
+    else:
+        icon = "❌"
+    msg = f"{icon} {play_date} ({weekday_key.title()}): {result.message}"
     notify(msg, creds.notify_webhook_url, log=_stamp)
     if result.screenshot:
         _stamp(f"Screenshot: {result.screenshot}")
-    return 0 if result.success else 1
+    return 0 if result.success or result.outcome == "no_release" else 1
 
 
 if __name__ == "__main__":
