@@ -144,10 +144,24 @@ def refresh():
     return redirect(url_for("home"))
 
 
-@app.route("/cancel/<int:res_id>", methods=["POST"])
+@app.route("/cancel/<int:res_id>", methods=["GET", "POST"])
 @require_auth
 def cancel(res_id):
-    _do_cancel([res_id])
+    r = _find_res(res_id)
+    if request.method == "GET":
+        if r is None:
+            flash("Couldn't find that reservation — try Refresh.")
+            return redirect(url_for("home"))
+        total = (r.players or 1)
+        return render_template_string(CANCEL_HTML, r=r, total=total,
+                                      options=list(range(1, total + 1)))
+    # POST — perform the cancellation.
+    total = (r.players if r else 1) or 1
+    try:
+        n = int(request.form.get("players_to_cancel", total))
+    except ValueError:
+        n = total
+    _cancel_one(res_id, max(1, min(n, total)))
     return redirect(url_for("home"))
 
 
@@ -173,6 +187,10 @@ def command():
             matched.extend(hits)
             if not hits:
                 unmatched.append(iso)
+        # A single match goes straight to the per-player cancel page (so it can
+        # ask how many golfers to cancel). Multiple matches use the list below.
+        if len(matched) == 1 and not unmatched:
+            return redirect(url_for("cancel", res_id=matched[0].id))
 
     return render_template_string(
         CONFIRM_HTML,
@@ -194,7 +212,10 @@ def command_apply():
     ids = [int(x) for x in (request.form.get("ids_csv") or "").split(",") if x]
 
     if action == "cancel":
-        _do_cancel(ids)
+        # Bulk cancel (multiple dates matched) — cancel each booking in full.
+        for rid in ids:
+            r = _find_res(rid)
+            _cancel_one(rid, (r.players if r else 1) or 1)
     elif action == "skip":
         state_store.add_skip_dates(dates)
         flash(f"Won't book: {', '.join(_pretty(d) for d in dates)}.")
@@ -210,22 +231,24 @@ def command_apply():
     return redirect(url_for("home"))
 
 
-def _do_cancel(ids):
-    if not ids:
-        flash("No matching reservation to cancel.")
-        return
+def _find_res(res_id):
+    for r in _reservations():
+        if r.id == res_id:
+            return r
+    return None
+
+
+def _cancel_one(res_id, players_to_cancel):
     cfg, creds = _load_cfg()
-    results = []
-    with _pw_lock:
-        for rid in ids:
-            try:
-                ok = cancel_reservation(cfg, creds, rid, log=lambda *_: None)
-                results.append(ok)
-            except Exception as exc:  # noqa: BLE001
-                flash(f"Cancel error for {rid}: {exc}")
-                results.append(False)
-    ok_n = sum(1 for r in results if r)
-    flash(f"Cancelled {ok_n} of {len(ids)} reservation(s).")
+    try:
+        with _pw_lock:
+            ok = cancel_reservation(cfg, creds, res_id, players_to_cancel, log=lambda *_: None)
+        flash(
+            f"Cancelled {players_to_cancel} player(s)." if ok
+            else "Couldn't confirm the cancellation — please check the portal."
+        )
+    except Exception as exc:  # noqa: BLE001
+        flash(f"Cancel error: {exc}")
     _refresh_reservations(force=True)
 
 
@@ -422,10 +445,7 @@ HOME_HTML = ("""
       <span class="pill {{ 'cancelled' if r.cancelled else 'ok' }}">{{ r.status }}</span>
     </div>
     {% if r.eligible_cancel and not r.cancelled %}
-    <form method=post action="{{ url_for('cancel', res_id=r.id) }}"
-          onsubmit="return confirm('Cancel {{ r.date_label }} at {{ r.time_label }}? This cannot be undone.');">
-      <p style="margin:12px 0 0"><button class="danger full" type=submit>Cancel this tee time</button></p>
-    </form>
+    <p style="margin:12px 0 0"><a class="btn danger full" href="{{ url_for('cancel', res_id=r.id) }}">Cancel this tee time</a></p>
     {% endif %}
   </div>
   {% endfor %}
@@ -490,6 +510,43 @@ CONFIRM_HTML = """
       <p style="margin:10px 0 0"><a class="btn ghost full" href="{{ url_for('home') }}">Cancel</a></p>
     </form>
   {% endif %}
+</div></body></html>
+"""
+
+
+CANCEL_HTML = """
+<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width, initial-scale=1"><meta name=color-scheme content=light>
+<title>Cancel tee time</title><style>""" + BASE_CSS + """
+  select { font:inherit; font-size:16px; padding:13px; width:100%; border-radius:11px;
+           border:1.5px solid #cdbf99; background:#fffdf7; color:#23362b; }
+</style></head>
+<body>""" + HEADER.replace("{% if signout %}", "{% if False %}") + """
+<div class=wrap>
+  <div class="card tee">
+    <div class=label>Cancel this tee time?</div>
+    <div class="when serif" style="margin-top:4px">{{ r.date_label }} · {{ r.time_label }}</div>
+    <div class=meta>{{ r.players }} golfer{{ '' if r.players == 1 else 's' }} · #{{ r.confirmation }}</div>
+  </div>
+
+  <form method=post action="{{ url_for('cancel', res_id=r.id) }}">
+    {% if total > 1 %}
+      <div class=card>
+        <div class=label style="margin-bottom:8px">How many players to cancel?</div>
+        <select name=players_to_cancel>
+          {% for n in options %}
+            <option value="{{ n }}" {{ 'selected' if n == total else '' }}>{{ n }}{{ ' (whole booking)' if n == total else '' }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% else %}
+      <input type=hidden name=players_to_cancel value=1>
+    {% endif %}
+    <button class="danger full" type=submit>Confirm cancellation</button>
+    <p style="margin:10px 0 0"><a class="btn ghost full" href="{{ url_for('home') }}">Keep it</a></p>
+  </form>
+
+  <div class=muted style="margin-top:14px">Can't be undone. PCC charges the full amount if you cancel within 4 hours of the tee time.</div>
 </div></body></html>
 """
 

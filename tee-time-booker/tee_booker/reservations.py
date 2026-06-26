@@ -112,11 +112,34 @@ def fetch_reservations(cfg: Config, creds: Credentials, *, log=print) -> list[Re
     return _parse(captured.get("data") or {})
 
 
-def cancel_reservation(cfg: Config, creds: Credentials, reservation_id, *, log=print) -> bool:
-    """Cancel one reservation. Returns True if the portal confirms success.
+def _select_mui_option(page, want: str | None) -> None:
+    """Pick an option from an already-open MUI Select menu.
 
-    NOTE: the portal cancels as soon as the /cancel page loads — there is no
-    "are you sure?" on their end. Confirm with the user before calling this.
+    If `want` is given, choose the option whose text equals it (falling back to
+    position); otherwise choose the first option.
+    """
+    options = page.locator('[role="option"]')
+    options.first.wait_for(timeout=10_000)
+    if want is None:
+        options.first.click()
+        return
+    count = options.count()
+    for i in range(count):
+        if options.nth(i).inner_text().strip() == str(want):
+            options.nth(i).click()
+            return
+    options.last.click()
+
+
+def cancel_reservation(
+    cfg: Config, creds: Credentials, reservation_id, players_to_cancel, *, log=print
+) -> bool:
+    """Cancel `players_to_cancel` players on a reservation. True if confirmed.
+
+    The portal's cancel form (Number of players + Reason + Submit) only renders
+    when reached through the app, so we open the reservation's detail page and
+    click "Cancel or Modify" — loading the /cancel URL directly does not work.
+    Cancellation is irreversible; confirm with the user before calling.
     """
     from playwright.sync_api import sync_playwright
 
@@ -127,19 +150,43 @@ def cancel_reservation(cfg: Config, creds: Credentials, reservation_id, *, log=p
         page = browser.new_context().new_page()
         try:
             login(page, cfg, creds, log=log)
-            log(f"Cancelling reservation {reservation_id} ...")
+            log(f"Cancelling {players_to_cancel} player(s) on reservation {reservation_id} ...")
             page.goto(
-                f"{base}/reservation/history/{reservation_id}/cancel",
+                f"{base}/reservation/history/{reservation_id}/details",
                 wait_until="domcontentloaded",
             )
+            page.wait_for_selector(
+                '[data-testid="res-history-cancel-modify-button"]', timeout=20_000
+            )
+            page.click('[data-testid="res-history-cancel-modify-button"]')
+            page.wait_for_selector(
+                '[data-testid="cancellation-request-submit-button"]', timeout=20_000
+            )
+
+            # Number of players to cancel (MUI Select).
+            try:
+                page.click('[data-testid="cancellation-request-players-to-cancel-input"]')
+                _select_mui_option(page, str(players_to_cancel))
+            except Exception as exc:  # noqa: BLE001
+                log(f"Couldn't set players-to-cancel ({exc}).")
+
+            # Reason for cancellation (required) — pick the first option.
+            try:
+                page.click('[data-testid="cancellation-request-reson-for-cancellation-input"]')
+                _select_mui_option(page, None)
+            except Exception as exc:  # noqa: BLE001
+                log(f"Couldn't set cancellation reason ({exc}).")
+
+            page.click('[data-testid="cancellation-request-submit-button"]')
             try:
                 page.wait_for_function(
-                    "() => /successfully received your cancellation/i.test(document.body.innerText)",
-                    timeout=15_000,
+                    "() => /successfully received your cancellation|your cancellation request/i"
+                    ".test(document.body.innerText)",
+                    timeout=20_000,
                 )
                 ok = True
             except Exception:  # noqa: BLE001
-                ok = "cancellation request" in (page.inner_text("body") or "").lower()
+                ok = "successfully received" in (page.inner_text("body") or "").lower()
         finally:
             browser.close()
     log(f"Cancellation {'succeeded' if ok else 'could not be confirmed'}.")
