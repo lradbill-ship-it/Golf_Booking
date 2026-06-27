@@ -15,16 +15,19 @@ This machine is set up to book tee times automatically at the 12:01 AM release.
 - **launchd job** `~/Library/LaunchAgents/com.laneradbill.teebooker.nightly.plist`
   fires at **23:58** nightly and runs `nightly.py` under `caffeinate -i` (so the
   Mac won't idle-sleep during the booking). `nightly.py` logs in ~60s before
-  release and then **keeps polling from 12:01 until ~12:31** (or until it books),
-  to catch a release that lands a little after midnight.
+  release and then **keeps polling from 12:01 until ~1:00 AM** (or until it
+  books), to catch a release that lands after midnight. Polling is deliberately
+  gentle (~15s jittered, images/fonts/analytics blocked, back-off on rate-limit
+  blocks) to stay under Cloudflare's limiter. Tighten the window once the
+  release pattern is known.
 
 - **Power schedule (you must set this once, needs admin):**
   ```bash
-  sudo pmset repeat wakeorpoweron MTWRFSU 23:55:00 sleep MTWRFSU 01:00:00
+  sudo pmset repeat wakeorpoweron MTWRFSU 23:55:00 sleep MTWRFSU 01:15:00
   ```
-  Wakes the Mac at 11:55 PM and sleeps it at 1:00 AM — the late sleep keeps it
-  awake for the full polling window (`release.retry_window_seconds`, 30 min).
-  If you lengthen that window, push the sleep time out to match.
+  Wakes the Mac at 11:55 PM and sleeps it at 1:15 AM — the late sleep keeps it
+  awake for the full polling window (`release.retry_window_seconds`, 59 min) plus
+  margin. If you change that window, push the sleep time out to match.
   Verify with `pmset -g sched`. Clear with `sudo pmset repeat cancel`.
 
 ## Safety — one booking per run

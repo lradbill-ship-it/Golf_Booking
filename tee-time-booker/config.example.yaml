@@ -39,7 +39,10 @@ release:
   # that lands a little after the nominal time (it waits for the fresh sheet).
   # Make sure the machine stays awake for the whole window.
   retry_window_seconds: 1800
-  retry_interval_seconds: 8.0
+  # Base seconds between checks (jittered +0-60% in code). Keep it gentle for
+  # long windows; the booker also blocks images/fonts/analytics and backs off
+  # on rate-limit blocks to stay under Cloudflare's limiter.
+  retry_interval_seconds: 15.0
 
 # What you want to book.
 booking:

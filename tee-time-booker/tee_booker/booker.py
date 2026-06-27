@@ -11,6 +11,7 @@ Playwright is imported lazily inside `run()` so the rest of the package
 
 from __future__ import annotations
 
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -55,6 +56,10 @@ class TeeBooker:
                 slow_mo=rt.slow_mo_ms or 0,
             )
             context = browser.new_context()
+            # Drop heavy, non-essential traffic (images/fonts/media + analytics
+            # trackers). Lighter footprint = far fewer requests per reload, which
+            # keeps the long poll well under the site's rate limiter.
+            context.route("**/*", self._maybe_block)
             page = context.new_page()
             try:
                 self._login(page)
@@ -225,7 +230,8 @@ class TeeBooker:
                     ),
                     screenshot=self._screenshot(page, "no_slot"),
                 )
-            time.sleep(interval)
+            # Jittered wait so reloads aren't a fixed-cadence metronome.
+            time.sleep(interval + random.uniform(0, interval * 0.6))
             # Reload and let the client-side sheet render before the next checks
             # (domcontentloaded fires before the SPA paints its cards/nav).
             try:
@@ -260,6 +266,28 @@ class TeeBooker:
                 page.reload(wait_until="domcontentloaded")
         except Exception:  # noqa: BLE001
             pass
+
+    # Trackers and heavy media we never need — blocking them cuts the request
+    # count per reload (gentler on the rate limiter, faster reloads).
+    _BLOCK_HOSTS = (
+        "datadoghq", "google-analytics", "googletagmanager", "doubleclick",
+        "facebook", "hotjar", "segment.io", "fullstory",
+    )
+
+    def _maybe_block(self, route):
+        try:
+            req = route.request
+            if req.resource_type in ("image", "media", "font") or any(
+                h in req.url for h in self._BLOCK_HOSTS
+            ):
+                route.abort()
+            else:
+                route.continue_()
+        except Exception:  # noqa: BLE001
+            try:
+                route.continue_()
+            except Exception:  # noqa: BLE001
+                pass
 
     # -- slot helpers ----------------------------------------------------------
 
