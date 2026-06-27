@@ -6,9 +6,39 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-06-27._
+_Last updated: 2026-06-27 (Session 2 — cloud review/harden)._
 
 ---
+
+## 0. Syncing this back to the Mac (read first if resuming locally)
+
+Session 2 ran in a **cloud container** (fresh clone, no local files). All its
+work is on branch `claude/golf-booking-app-session-2-r3i7zt`, which is just
+`main` **+ 1 commit** (a clean fast-forward — no conflicts). To pull it onto the
+Mac and consolidate everything in one local place:
+
+```bash
+cd ~/Golf_Booking
+git fetch origin
+git checkout main
+git merge --ff-only origin/claude/golf-booking-app-session-2-r3i7zt
+git push origin main          # optional: keep the remote main current
+```
+
+Your gitignored local files (`config.yaml`, `.env`, `.dashboard.env`, `.venv/`,
+`logs/`, `state/`, `screenshots/`) are untouched by this — they live only on the
+Mac and aren't in any branch. After the merge, future sessions can just work on
+`main` locally. Then verify: `cd tee-time-booker && .venv/bin/python -m pytest -q`
+(expect 64 passing).
+
+### What Session 2 changed (no behavior change to the nightly race)
+- Removed a leaked-browser path in `booker.run()` (guarded both closes).
+- `_players_allowed` now accepts `"up to N"` / `"max N"` labels (a twosome is no
+  longer skipped from a slot that allows it).
+- Fixed the stale cancel-flow docstring in `reservations.py`.
+- Dashboard cancel POST no longer caps players-to-cancel to 1 on a cache miss.
+- Added tests for `compute_play_date`, `reservations._parse`, `state_store`, and
+  the new party-size cases (42 → 64 passing).
 
 ## 1. What this is
 
