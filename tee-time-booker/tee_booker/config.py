@@ -52,6 +52,9 @@ class ReleaseConfig:
     release_time: str = "00:01"
     timezone: str = "America/New_York"
     warmup_seconds: int = 30
+    # Log in this many seconds BEFORE the release so authentication happens
+    # before the 12:01 traffic surge (logging in at the peak was failing).
+    prelogin_seconds: int = 60
     retry_window_seconds: int = 90
     # Seconds between retries. Keep this gentle — reloading too fast trips the
     # site's rate limiter (Cloudflare 1015) and gets the booker temporarily banned.

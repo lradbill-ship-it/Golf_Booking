@@ -32,6 +32,9 @@ release:
   timezone: "America/New_York"  # handles EST/EDT automatically
   # How early (seconds) to wake up and be ready before the release instant.
   warmup_seconds: 30
+  # Log in this many seconds before the release, so authentication finishes
+  # before the high-traffic release moment (logging in at the peak can fail).
+  prelogin_seconds: 60
   # After the release instant, keep retrying for this long if slots aren't
   # immediately visible or a click fails.
   retry_window_seconds: 90
@@ -56,8 +59,9 @@ selectors:
   username: "#username"
   password: "#password"
   login_button: "button[type=submit]"
-  # A selector that only appears AFTER a successful login (used to confirm
-  # the login worked before proceeding).
+  # A selector that appears ONLY when truly logged in (e.g. an account/profile
+  # button) — used to confirm login. Avoid anything that also shows when logged
+  # out (a tee-sheet date header often does), or login can false-positive.
   login_success_marker: ".member-dashboard, .logout"
 
   # On the tee sheet, the row/cell representing a bookable slot. The booker

@@ -38,8 +38,14 @@ class TeeBooker:
 
     # -- public ----------------------------------------------------------------
 
-    def run(self, play_date: date_cls, *, dry_run: bool = False) -> BookingResult:
-        """Log in and attempt to book a preferred time for play_date."""
+    def run(self, play_date: date_cls, *, dry_run: bool = False,
+            release_at=None, tz=None) -> BookingResult:
+        """Log in and attempt to book a preferred time for play_date.
+
+        If release_at/tz are given, log in first and then hold until the release
+        instant, so authentication completes before the traffic surge instead of
+        racing it (logging in at the peak was leaving the booker logged out).
+        """
         from playwright.sync_api import sync_playwright  # lazy import
 
         rt = self.cfg.runtime
@@ -52,6 +58,13 @@ class TeeBooker:
             page = context.new_page()
             try:
                 self._login(page)
+                if release_at is not None and tz is not None and not dry_run:
+                    from .scheduler import seconds_until, wait_until
+                    remaining = seconds_until(release_at, tz)
+                    if remaining > 0:
+                        self.log(f"Logged in early; holding {remaining:.0f}s until release ...")
+                        wait_until(release_at, tz, warmup_seconds=0, log=self.log)
+                        self.log("Release — opening the tee sheet now.")
                 self._open_tee_sheet(page, play_date)
                 if dry_run:
                     slot = self._find_available_slot(page)
@@ -82,10 +95,23 @@ class TeeBooker:
 
         login(page, self.cfg, self.creds, log=self.log)
 
-    def _open_tee_sheet(self, page, play_date: date_cls) -> None:
+    def _open_tee_sheet(self, page, play_date: date_cls, *, allow_relogin: bool = True) -> None:
         url = self.cfg.tee_sheet_url_for(play_date)
         self.log(f"Opening tee sheet {url}")
         page.goto(url, wait_until="domcontentloaded")
+
+        # If the member session didn't carry over (the tee sheet shows logged
+        # out), log in again and reopen once — a logged-out tee sheet shows no
+        # bookable member times.
+        marker = self.cfg.selectors.get("login_success_marker")
+        if allow_relogin and marker:
+            try:
+                page.wait_for_selector(marker, timeout=6_000)
+            except Exception:  # noqa: BLE001
+                self.log("Tee sheet is logged out — re-logging in and reopening.")
+                self._login(page)
+                return self._open_tee_sheet(page, play_date, allow_relogin=False)
+
         dp = self.cfg.date_picker or {}
         if dp.get("enabled"):
             self._pick_date(page, play_date)
@@ -93,6 +119,11 @@ class TeeBooker:
         # look. Absence is fine here — the race loop reloads until they show.
         try:
             page.wait_for_selector(self.cfg.selectors["time_slot"], timeout=10_000)
+        except Exception:  # noqa: BLE001
+            pass
+        # Visibility for diagnosing the race: how many cards are present.
+        try:
+            self.log(f"Tee sheet ready: {page.locator(self.cfg.selectors['time_slot']).count()} slot card(s) visible.")
         except Exception:  # noqa: BLE001
             pass
 

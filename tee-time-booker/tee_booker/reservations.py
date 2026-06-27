@@ -132,7 +132,8 @@ def _select_mui_option(page, want: str | None) -> None:
 
 
 def cancel_reservation(
-    cfg: Config, creds: Credentials, reservation_id, players_to_cancel, *, log=print
+    cfg: Config, creds: Credentials, reservation_id, players_to_cancel, *,
+    reason: str = "Other", log=print
 ) -> bool:
     """Cancel `players_to_cancel` players on a reservation. True if confirmed.
 
@@ -170,10 +171,11 @@ def cancel_reservation(
             except Exception as exc:  # noqa: BLE001
                 log(f"Couldn't set players-to-cancel ({exc}).")
 
-            # Reason for cancellation (required) — pick the first option.
+            # Reason for cancellation (required by the portal). Always "Other"
+            # so we never have to ask — "Other" is one of the menu options.
             try:
                 page.click('[data-testid="cancellation-request-reson-for-cancellation-input"]')
-                _select_mui_option(page, None)
+                _select_mui_option(page, reason)
             except Exception as exc:  # noqa: BLE001
                 log(f"Couldn't set cancellation reason ({exc}).")
 

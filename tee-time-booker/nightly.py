@@ -116,18 +116,24 @@ def main(argv=None) -> int:
         _stamp(f"Configuration problem: {exc}")
         return 2
 
-    if not args.no_wait:
-        _stamp(f"Waiting until release at {release_at.isoformat()} ...")
+    if args.no_wait:
+        result = TeeBooker(cfg, creds, log=_stamp).run(play_date, dry_run=args.dry_run)
+    else:
+        # Wait until shortly before release, then let run() log in and hold the
+        # final seconds — so we authenticate before the 12:01 surge, not during.
+        prelogin = int(getattr(cfg.release, "prelogin_seconds", 60) or 0)
+        login_at = release_at - timedelta(seconds=prelogin)
+        _stamp(f"Waiting until {login_at.isoformat()} to log in ({prelogin}s before release) ...")
         wait_until(
-            release_at,
+            login_at,
             tz,
             warmup_seconds=cfg.release.warmup_seconds,
-            on_warmup=lambda rem: _stamp(f"Release in {rem:.0f}s — getting ready."),
+            on_warmup=lambda rem: _stamp(f"Logging in in {rem:.0f}s ..."),
             log=_stamp,
         )
-        _stamp("Release! Attempting booking now.")
-
-    result = TeeBooker(cfg, creds, log=_stamp).run(play_date, dry_run=args.dry_run)
+        result = TeeBooker(cfg, creds, log=_stamp).run(
+            play_date, dry_run=args.dry_run, release_at=release_at, tz=tz
+        )
     msg = (
         f"{'✅' if result.success else '❌'} {play_date} ({weekday_key.title()}): "
         f"{result.message}"
