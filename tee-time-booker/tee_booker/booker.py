@@ -78,7 +78,7 @@ class TeeBooker:
                         booked_time=label,
                         message=f"DRY RUN: would book {label!r} (no click made).",
                     )
-                return self._attempt_booking(page)
+                return self._attempt_booking(page, play_date)
             except Exception as exc:  # noqa: BLE001
                 shot = self._screenshot(page, "error")
                 return BookingResult(
@@ -136,48 +136,67 @@ class TeeBooker:
             page.click(day_sel)
             page.wait_for_load_state("networkidle")
 
-    def _attempt_booking(self, page) -> BookingResult:
-        """Race for a preferred slot, then book exactly ONE.
+    def _attempt_booking(self, page, play_date=None) -> BookingResult:
+        """Poll for a preferred slot, then book exactly ONE.
 
-        Safety guarantee — at most one booking per run:
-        the loop only retries while *no* slot has been purchased. `_book_slot`
-        returns one of:
-          "booked" — success; we return immediately.
+        Keeps gently re-checking from the moment it starts until a booking lands
+        or `release.retry_window_seconds` elapses — so it tolerates the sheet
+        being released a little after the nominal release time (it waits for the
+        fresh sheet to appear). It backs off on rate-limit blocks and re-logs-in
+        if the session drops during the wait.
+
+        Safety guarantee — at most one booking per run: the loop only continues
+        while *no* slot has been purchased. `_book_slot` returns one of:
+          "booked" — success; return immediately.
           "stop"   — a purchase was attempted but not confirmed (or the cart
-                     looked wrong). We do NOT retry, to avoid a double booking.
-          "retry"  — the attempt failed *before* any purchase, so no booking was
-                     made; it's safe to try again (e.g. the next preferred time).
+                     looked wrong); do NOT retry, to avoid a double booking.
+          "retry"  — failed *before* any purchase, so nothing was booked; safe
+                     to try again (e.g. the next preferred time).
         """
-        deadline = time.monotonic() + self.cfg.release.retry_window_seconds
+        start = time.monotonic()
+        deadline = start + self.cfg.release.retry_window_seconds
         interval = self.cfg.release.retry_interval_seconds
         attempt = 0
         while True:
             attempt += 1
+            elapsed = time.monotonic() - start
+
+            # Rate-limited? Back off and keep waiting rather than giving up.
             if self._is_blocked(page):
-                shot = self._screenshot(page, "blocked")
-                return BookingResult(
-                    False,
-                    message=(
-                        "Blocked by the site's rate limiter (Cloudflare 1015). Stopped "
-                        "so as not to make it worse — try again in a few minutes."
-                    ),
-                    screenshot=shot,
-                )
+                backoff = max(interval, 60.0)
+                self.log(f"[{elapsed:.0f}s] Rate-limited (Cloudflare) — backing off {backoff:.0f}s.")
+                if time.monotonic() + backoff >= deadline:
+                    return BookingResult(
+                        False,
+                        message="Still rate-limited when the retry window ended — check the portal.",
+                        screenshot=self._screenshot(page, "blocked"),
+                    )
+                time.sleep(backoff)
+                self._reopen(page, play_date)
+                continue
+
+            # The session can lapse during a long wait — re-login only when the
+            # page POSITIVELY shows the logged-out state (absence of a marker can
+            # just mean the SPA hasn't finished rendering after a reload).
+            if play_date is not None and self._is_logged_out(page):
+                self.log(f"[{elapsed:.0f}s] Session dropped — re-logging in.")
+                self._login(page)
+                self._open_tee_sheet(page, play_date, allow_relogin=False)
+
+            cards = self._slot_count(page)
             slot = self._find_available_slot(page)
             if slot is not None:
                 label = self._slot_label_text(slot)
-                self.log(f"Found available slot {label!r} (attempt {attempt}); booking once...")
+                self.log(f"[{elapsed:.0f}s] Found {label!r} (check #{attempt}); booking once...")
                 status = self._book_slot(page, slot)
                 if status == "booked":
-                    shot = self._screenshot(page, "confirmed")
                     return BookingResult(
                         True,
                         booked_time=label,
                         message=f"Booked {label} for {self.cfg.booking.players} players.",
-                        screenshot=shot,
+                        screenshot=self._screenshot(page, "confirmed"),
                     )
                 if status == "stop":
-                    shot = self._screenshot(page, "unconfirmed")
                     return BookingResult(
                         False,
                         booked_time=label,
@@ -187,22 +206,60 @@ class TeeBooker:
                             "retrying to avoid a possible double booking — please "
                             "check the portal."
                         ),
-                        screenshot=shot,
+                        screenshot=self._screenshot(page, "unconfirmed"),
                     )
-                self.log(f"Couldn't secure {label} (no booking made); will retry.")
+                self.log(f"[{elapsed:.0f}s] Couldn't secure {label} (no booking made); will retry.")
+            else:
+                self.log(
+                    f"[{elapsed:.0f}s] check #{attempt}: {cards} card(s), no preferred "
+                    "time bookable yet — waiting for the fresh sheet."
+                )
+
             if time.monotonic() >= deadline:
-                shot = self._screenshot(page, "no_slot")
                 return BookingResult(
                     False,
                     message=(
                         f"No preferred time became bookable within "
-                        f"{self.cfg.release.retry_window_seconds}s "
-                        f"({attempt} attempts)."
+                        f"{self.cfg.release.retry_window_seconds}s ({attempt} checks). The "
+                        "sheet may not have released in time, or the times were taken."
                     ),
-                    screenshot=shot,
+                    screenshot=self._screenshot(page, "no_slot"),
                 )
             time.sleep(interval)
-            page.reload(wait_until="domcontentloaded")
+            # Reload and let the client-side sheet render before the next checks
+            # (domcontentloaded fires before the SPA paints its cards/nav).
+            try:
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_selector(self.cfg.selectors["time_slot"], timeout=8_000)
+            except Exception:  # noqa: BLE001
+                pass  # no cards yet (sheet not open) — handled on the next loop
+
+    def _is_logged_out(self, page) -> bool:
+        """True only when the page positively shows the logged-out affordance.
+
+        Uses presence of "Login / Sign Up" rather than the absence of a logged-in
+        marker, which can be momentarily missing right after a reload.
+        """
+        try:
+            return "login / sign up" in (page.inner_text("body") or "").lower()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _slot_count(self, page) -> int:
+        try:
+            return page.locator(self.cfg.selectors["time_slot"]).count()
+        except Exception:  # noqa: BLE001
+            return -1
+
+    def _reopen(self, page, play_date) -> None:
+        """Reload the tee sheet (re-navigating, which also re-logins if needed)."""
+        try:
+            if play_date is not None:
+                self._open_tee_sheet(page, play_date)
+            else:
+                page.reload(wait_until="domcontentloaded")
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- slot helpers ----------------------------------------------------------
 

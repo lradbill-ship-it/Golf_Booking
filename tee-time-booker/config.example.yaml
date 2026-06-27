@@ -35,10 +35,11 @@ release:
   # Log in this many seconds before the release, so authentication finishes
   # before the high-traffic release moment (logging in at the peak can fail).
   prelogin_seconds: 60
-  # After the release instant, keep retrying for this long if slots aren't
-  # immediately visible or a click fails.
-  retry_window_seconds: 90
-  retry_interval_seconds: 1.0
+  # Keep checking this long after the start — large enough to cover a release
+  # that lands a little after the nominal time (it waits for the fresh sheet).
+  # Make sure the machine stays awake for the whole window.
+  retry_window_seconds: 1800
+  retry_interval_seconds: 8.0
 
 # What you want to book.
 booking:
