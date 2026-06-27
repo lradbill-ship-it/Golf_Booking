@@ -14,6 +14,7 @@ Flags:
   --dry-run     Log in and report the slot it would book, without booking.
   --no-wait     Skip waiting for the release instant (book/inspect immediately).
   --date DATE   Override the computed play date (YYYY-MM-DD), for testing.
+  --history     Print the recorded release-time history and exit.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta
 
-from tee_booker import state_store
+from tee_booker import release_history, state_store
 from tee_booker.booker import TeeBooker
 from tee_booker.config import Config, ConfigError, Credentials
 from tee_booker.notify import notify
@@ -56,11 +57,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan", action="store_true", help="Print the plan and exit.")
     p.add_argument("--dry-run", action="store_true", help="Don't actually book.")
     p.add_argument("--no-wait", action="store_true", help="Skip waiting for release.")
+    p.add_argument("--history", action="store_true",
+                   help="Print the recorded release-time history and exit.")
     return p
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.history:
+        print(release_history.summarize())
+        return 0
 
     if state_store.is_paused() and not args.plan:
         _stamp("Automation is PAUSED (kill switch on) — doing nothing tonight.")
@@ -141,6 +148,25 @@ def main(argv=None) -> int:
     notify(msg, creds.notify_webhook_url, log=_stamp)
     if result.screenshot:
         _stamp(f"Screenshot: {result.screenshot}")
+
+    # Log when the sheet actually released, to learn the real release time over
+    # several nights (only for genuine waited runs — not dry-runs or --no-wait).
+    if not args.dry_run and not args.no_wait:
+        rec = release_history.record(
+            play_date=play_date,
+            weekday=weekday_key.title(),
+            nominal_release=release_at,
+            released_at=result.release_detected_at,
+            booked=result.success,
+            booked_time=result.booked_time,
+            attempts=result.attempts,
+            outcome=result.message,
+        )
+        if rec["seconds_after_nominal"] is not None:
+            _stamp(
+                f"Sheet released {release_history._fmt_delta(rec['seconds_after_nominal'])} "
+                f"after nominal 00:01 (logged to release history)."
+            )
     return 0 if result.success else 1
 
 

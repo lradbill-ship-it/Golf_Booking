@@ -28,6 +28,11 @@ class BookingResult:
     booked_time: Optional[str] = None
     message: str = ""
     screenshot: Optional[str] = None
+    # Wall-clock moment the fresh tee sheet first showed slot cards (i.e. when
+    # the sheet actually released), and how many poll checks it took. Used by
+    # the nightly run to log the real release time. None if it never released.
+    release_detected_at: Optional[datetime] = None
+    attempts: int = 0
 
 
 class TeeBooker:
@@ -48,6 +53,7 @@ class TeeBooker:
         """
         from playwright.sync_api import sync_playwright  # lazy import
 
+        self._tz = tz  # used to timestamp the observed release moment
         rt = self.cfg.runtime
         with sync_playwright() as p:
             browser = p.chromium.launch(
@@ -169,6 +175,7 @@ class TeeBooker:
         deadline = start + self.cfg.release.retry_window_seconds
         interval = self.cfg.release.retry_interval_seconds
         attempt = 0
+        released_at: Optional[datetime] = None  # when cards first appeared
         while True:
             attempt += 1
             elapsed = time.monotonic() - start
@@ -182,6 +189,8 @@ class TeeBooker:
                         False,
                         message="Still rate-limited when the retry window ended — check the portal.",
                         screenshot=self._screenshot(page, "blocked"),
+                        release_detected_at=released_at,
+                        attempts=attempt,
                     )
                 time.sleep(backoff)
                 self._reopen(page, play_date)
@@ -196,6 +205,13 @@ class TeeBooker:
                 self._open_tee_sheet(page, play_date, allow_relogin=False)
 
             cards = self._slot_count(page)
+            # First time the fresh sheet shows any cards = the actual release.
+            if released_at is None and cards > 0:
+                released_at = datetime.now(getattr(self, "_tz", None))
+                self.log(
+                    f"[{elapsed:.0f}s] Sheet released: {cards} card(s) appeared "
+                    f"at {released_at.strftime('%H:%M:%S')}."
+                )
             slot = self._find_available_slot(page)
             if slot is not None:
                 label = self._slot_label_text(slot)
@@ -207,6 +223,8 @@ class TeeBooker:
                         booked_time=label,
                         message=f"Booked {label} for {self.cfg.booking.players} players.",
                         screenshot=self._screenshot(page, "confirmed"),
+                        release_detected_at=released_at,
+                        attempts=attempt,
                     )
                 if status == "stop":
                     return BookingResult(
@@ -219,6 +237,8 @@ class TeeBooker:
                             "check the portal."
                         ),
                         screenshot=self._screenshot(page, "unconfirmed"),
+                        release_detected_at=released_at,
+                        attempts=attempt,
                     )
                 self.log(f"[{elapsed:.0f}s] Couldn't secure {label} (no booking made); will retry.")
             else:
@@ -236,6 +256,8 @@ class TeeBooker:
                         "sheet may not have released in time, or the times were taken."
                     ),
                     screenshot=self._screenshot(page, "no_slot"),
+                    release_detected_at=released_at,
+                    attempts=attempt,
                 )
             # Jittered wait so reloads aren't a fixed-cadence metronome.
             time.sleep(interval + random.uniform(0, interval * 0.6))

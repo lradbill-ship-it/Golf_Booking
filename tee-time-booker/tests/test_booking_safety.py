@@ -90,3 +90,25 @@ def test_no_slot_never_books():
     assert res.success is False
     assert b.book_calls == 0
     assert "no preferred time" in res.message.lower()
+
+
+def test_result_reports_attempt_count():
+    b = _booker(["booked"])
+    res = b._attempt_booking(_FakePage())
+    assert res.attempts == 1
+
+
+def test_release_detected_when_cards_appear():
+    # Once the sheet shows cards, the result carries the moment it released.
+    b = _booker(["booked"])
+    b._slot_count = lambda page: 4
+    res = b._attempt_booking(_FakePage())
+    assert res.release_detected_at is not None
+
+
+def test_release_not_detected_while_sheet_empty():
+    # No cards ever => nothing to record as a release.
+    b = _booker([], find_slot=False, window=0.05)
+    b._slot_count = lambda page: 0
+    res = b._attempt_booking(_FakePage())
+    assert res.release_detected_at is None

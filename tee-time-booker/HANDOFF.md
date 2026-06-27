@@ -56,7 +56,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **64 tests pass** (`.venv/bin/python -m pytest -q`).
+- **75 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -97,6 +97,7 @@ drifts later.
 | `tee_booker/reservations.py` | List reservations (Kenna JSON API) and **cancel** (detail → Cancel or Modify → form). |
 | `tee_booker/commands.py` | Local rule-based NL command parser (cancel/skip/pause/etc). No API. |
 | `tee_booker/state_store.py` | Kill-switch flag + per-date skip list (`state/`). |
+| `tee_booker/release_history.py` | Append-only log of each night's actual sheet-release time (`state/release_history.jsonl`); `summarize()` powers `nightly.py --history`. |
 | `tee_booker/config.py` | Config dataclasses + validation. |
 | `tee_booker/scheduler.py` | Precise `wait_until` for the release instant. |
 | `tee_booker/notify.py` | Optional webhook notification. |
@@ -147,7 +148,13 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ## 7. Open items / next steps
 
-- **TIGHTEN THE WINDOW.** Watch `logs/nightly.log` for **2–3 more nights** to
+- **Release-time tracking is now automatic (Session 3).** Every genuine waited
+  run appends a record to `state/release_history.jsonl` (when the sheet actually
+  released vs. the nominal 00:01, whether it booked, how many checks). View it
+  with `.venv/bin/python nightly.py --history`. The one known data point
+  (Sat Jul 11, released 00:14:18 → +13m18s) is backfilled. Let a few more nights
+  accumulate, then use the median to tighten the window.
+- **TIGHTEN THE WINDOW.** Watch `nightly.py --history` for **2–3 more nights** to
   confirm the release time (~12:14 so far). Then narrow `retry_window_seconds`
   (e.g. 12:01–12:30) so the Mac sleeps earlier, and consider polling a bit
   faster in the ~2-minute band around the known release to compete for popular
@@ -164,9 +171,10 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 64 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 75 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
+.venv/bin/python nightly.py --history          # when the sheet actually released each night
 .venv/bin/python nightly.py --date 2026-07-12 --no-wait --dry-run  # safe dry run
 
 # Manual booking / inspection (CLI):
