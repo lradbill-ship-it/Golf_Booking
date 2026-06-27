@@ -26,7 +26,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **42 tests pass** (`.venv/bin/python -m pytest -q`).
+- **64 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -134,7 +134,7 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 42 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 64 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --date 2026-07-12 --no-wait --dry-run  # safe dry run

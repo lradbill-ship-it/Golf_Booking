@@ -156,11 +156,15 @@ def cancel(res_id):
         return render_template_string(CANCEL_HTML, r=r, total=total,
                                       options=list(range(1, total + 1)))
     # POST — perform the cancellation.
-    total = (r.players if r else 1) or 1
     try:
-        n = int(request.form.get("players_to_cancel", total))
-    except ValueError:
-        n = total
+        n = int(request.form.get("players_to_cancel", 1))
+    except (TypeError, ValueError):
+        n = 1
+    # Cap by the booking's player count when we still have it cached; if the
+    # reservation aged out of the cache between GET and POST, trust the value the
+    # user submitted (the GET form only offered valid options) rather than
+    # silently forcing it down to 1.
+    total = (r.players or n) if r else n
     _cancel_one(res_id, max(1, min(n, total)))
     return redirect(url_for("home"))
 

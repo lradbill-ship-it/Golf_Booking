@@ -19,6 +19,12 @@ from tee_booker.booker import TeeBooker
     ("1", 2, False),     # a single-golfer slot must be rejected for a twosome
     ("1 - 3", 2, True),
     ("1 - 3", 4, False),
+    ("up to 4", 2, True),    # upper-bound-only labels must still admit a twosome
+    ("up to 4", 4, True),
+    ("up to 4", 5, False),
+    ("max 4 players", 2, True),
+    ("maximum 2", 2, True),
+    ("maximum 2", 3, False),
     ("", 2, True),       # unknown label -> don't over-filter
 ])
 def test_players_allowed(label, players, expected):

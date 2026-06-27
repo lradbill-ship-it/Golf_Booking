@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Optional
 
 from .config import Config, Credentials
-from .notify import notify
 
 
 @dataclass
@@ -90,8 +89,16 @@ class TeeBooker:
                     False, message=f"Error: {exc}", screenshot=shot
                 )
             finally:
-                context.close()
-                browser.close()
+                # Close both even if the first close raises, so a crashed
+                # context can never leak the underlying browser process.
+                try:
+                    context.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- steps -----------------------------------------------------------------
 
@@ -339,13 +346,17 @@ class TeeBooker:
 
     @staticmethod
     def _players_allowed(label_text: str, players: int) -> bool:
-        """Parse a party-size label like '1 or 2', '2 - 4', or '1'."""
+        """Parse a party-size label like '1 or 2', '2 - 4', 'up to 4', or '1'."""
         txt = (label_text or "").lower()
         nums = [int(n) for n in re.findall(r"\d+", txt)]
         if not nums:
             return True  # unknown format — don't over-filter
         if "or" in txt:
             return players in nums          # e.g. "1 or 2"
+        # "up to N" / "max N" means any party from 1 up to N — so a twosome must
+        # not be skipped just because the label only names the upper bound.
+        if any(k in txt for k in ("up to", "upto", "maximum", "max")):
+            return 1 <= players <= max(nums)
         if len(nums) >= 2:
             return nums[0] <= players <= nums[-1]  # e.g. "2 - 4"
         return players == nums[0]           # e.g. "1"

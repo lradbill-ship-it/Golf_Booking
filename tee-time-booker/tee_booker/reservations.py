@@ -5,9 +5,12 @@ backend JSON the page fetches for itself (host *.kenna.io,
 `/reservation/history?playDateMin=...`). That avoids re-implementing the
 portal's auth and avoids scraping a detail page per reservation.
 
-Cancelling works by navigating to `/reservation/history/{id}/cancel`, which the
-portal processes immediately (there is no extra confirm step on their side —
-so callers must do their own confirmation before calling this).
+Cancelling is NOT a single URL hit: loading `/reservation/history/{id}/cancel`
+cold does not render or process anything. The portal only shows the cancel form
+when reached through the app, so `cancel_reservation` opens the reservation's
+detail page, clicks "Cancel or Modify", fills the form (players + reason), and
+submits. Cancellation is irreversible, so callers must confirm with the user
+first.
 """
 
 from __future__ import annotations
