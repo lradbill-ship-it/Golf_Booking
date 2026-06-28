@@ -56,7 +56,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **75 tests pass** (`.venv/bin/python -m pytest -q`).
+- **83 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -145,9 +145,26 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    `test_booking_safety.py`. Don't loosen this.
 6. **Cold deep-links to SPA sub-routes hang** (e.g. `/reservation/history/<id>/
    cancel`); navigate the app the way a user does instead.
+7. **A slot can be taken out from under you at checkout** (Session 3, the
+   2026-06-28 Jul-12 run: found 7:00 AM, but it was gone by the time checkout
+   completed → "The selected inventory is no longer available"). This is a
+   *safe* rejection (nothing bought), NOT a possible double-booking. The booker
+   now detects that message, returns `"taken"`, and tries the **next** preferred
+   time (e.g. 7:10) — resolving the lost race in ~1s instead of waiting out the
+   full confirmation timeout. To clean up the dead cart item before the retry it
+   needs the optional `cart_item_remove` selector in config.yaml; without it the
+   retry still runs but the >1-item guard may stop it (still safe — see §7).
 
 ## 7. Open items / next steps
 
+- **Capture the `cart_item_remove` selector (Session 3).** The checkout-race
+  recovery (gotcha #7) tries the next preferred time when one is taken. To clear
+  the now-dead cart item before retrying it needs the TeeItUp cart kebab's
+  "remove" menu-item selector, set as `cart_item_remove` in the local
+  `config.yaml`. Grab it from the portal (open the cart kebab on an item, inspect
+  the remove option) and add it; until then recovery may be blocked by the
+  >1-item safety guard (no over-booking risk either way). Unit tests cover the
+  logic; the cart-clear DOM step still needs one live confirmation.
 - **Release-time tracking is now automatic (Session 3).** Every genuine waited
   run appends a record to `state/release_history.jsonl` (when the sheet actually
   released vs. the nominal 00:01, whether it booked, how many checks). View it
@@ -171,7 +188,7 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 75 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 83 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night

@@ -103,6 +103,12 @@ selectors:
   # If set and the cart ever holds more than one item at checkout, the booker
   # aborts instead of booking several at once.
   cart_item: ""
+  # Optional: if a preferred time is taken by someone else mid-checkout, the
+  # booker tries the next preferred time. To do that cleanly it first clears the
+  # cart of the now-unavailable item using this selector (the kebab menu's
+  # "remove"/"delete" item, opened by clicking `cart_item`). Leave blank to skip
+  # cart-clearing — the >1-item guard above still prevents any over-booking.
+  cart_item_remove: ""
   # Button to start checkout from the cart drawer/page.
   cart_checkout_button: ""
   # The "I agree to the terms" checkbox on the checkout page.

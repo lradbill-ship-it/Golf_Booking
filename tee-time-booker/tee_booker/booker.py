@@ -176,6 +176,7 @@ class TeeBooker:
         interval = self.cfg.release.retry_interval_seconds
         attempt = 0
         released_at: Optional[datetime] = None  # when cards first appeared
+        taken_labels: set = set()  # preferred times lost to others at checkout
         while True:
             attempt += 1
             elapsed = time.monotonic() - start
@@ -212,7 +213,7 @@ class TeeBooker:
                     f"[{elapsed:.0f}s] Sheet released: {cards} card(s) appeared "
                     f"at {released_at.strftime('%H:%M:%S')}."
                 )
-            slot = self._find_available_slot(page)
+            slot = self._find_available_slot(page, exclude=taken_labels)
             if slot is not None:
                 label = self._slot_label_text(slot)
                 self.log(f"[{elapsed:.0f}s] Found {label!r} (check #{attempt}); booking once...")
@@ -240,6 +241,29 @@ class TeeBooker:
                         release_detected_at=released_at,
                         attempts=attempt,
                     )
+                if status == "taken":
+                    # The slot was grabbed by someone else during checkout. The
+                    # portal positively rejected the purchase, so nothing was
+                    # booked — skip this time and immediately try the next one.
+                    taken_labels.add(self._normalize(label))
+                    self.log(
+                        f"[{elapsed:.0f}s] {label!r} was taken at checkout; clearing the "
+                        "cart and trying the next preferred time."
+                    )
+                    self._clear_cart(page)
+                    self._reopen(page, play_date)
+                    if time.monotonic() >= deadline:
+                        return BookingResult(
+                            False,
+                            message=(
+                                "Preferred times kept getting taken at checkout before the "
+                                "window closed — nothing booked."
+                            ),
+                            screenshot=self._screenshot(page, "no_slot"),
+                            release_detected_at=released_at,
+                            attempts=attempt,
+                        )
+                    continue  # re-scan now, don't wait the full poll interval
                 self.log(f"[{elapsed:.0f}s] Couldn't secure {label} (no booking made); will retry.")
             else:
                 self.log(
@@ -333,12 +357,33 @@ class TeeBooker:
             return False
         return any(m in text for m in self._BLOCK_MARKERS)
 
-    def _find_available_slot(self, page):
+    # Shown when the chosen slot was grabbed by someone else mid-checkout, so the
+    # purchase was rejected. A POSITIVE signal that nothing was bought — unlike an
+    # ambiguous timeout — so the booker may safely try the next preferred time.
+    _INVENTORY_GONE_MARKERS = (
+        "no longer available",
+        "select another tee time",
+        "issue finishing your booking",
+        "please select another time",
+    )
+
+    def _inventory_unavailable(self, page) -> bool:
+        """True when the portal rejected the purchase because the slot was taken."""
+        try:
+            text = (page.inner_text("body") or "").lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return any(m in text for m in self._INVENTORY_GONE_MARKERS)
+
+    def _find_available_slot(self, page, exclude=None):
         """Return the first slot matching a preferred time that also fits the party.
 
         Skips slots whose allowed party size doesn't include booking.players, so
-        a "1 golfer only" slot is never chosen for a twosome.
+        a "1 golfer only" slot is never chosen for a twosome. `exclude` is a set
+        of normalized labels to skip — used to pass over a time that was already
+        taken out from under us at checkout.
         """
+        exclude = exclude or set()
         s = self.cfg.selectors
         for wanted in self.cfg.booking.preferred_times:
             slots = page.locator(s["time_slot"])
@@ -347,6 +392,8 @@ class TeeBooker:
                 slot = slots.nth(i)
                 label = self._slot_label_text(slot)
                 if label and self._times_match(wanted, label):
+                    if self._normalize(label) in exclude:
+                        continue  # already lost this one at checkout
                     # Must be bookable AND allow our group size.
                     if slot.locator(s["book_button"]).count() > 0 and self._slot_allows_players(slot):
                         return slot
@@ -521,22 +568,66 @@ class TeeBooker:
                 attempted_purchase = True
                 page.click(complete)
 
-            # 7) Success = we leave the checkout route (portal shows confirmation).
-            leaves = (self.cfg.checkout or {}).get("success_when_url_leaves", "/checkout")
-            timeout_ms = int((self.cfg.checkout or {}).get("success_timeout_seconds", 20)) * 1000
-            try:
-                page.wait_for_url(lambda url: leaves not in url, timeout=timeout_ms)
-                return "booked"
-            except Exception:  # noqa: BLE001
-                # Clicked purchase but couldn't confirm — never retry (might have
-                # gone through). Caller reports and stops.
-                return "stop" if attempted_purchase else "retry"
+            # 7) Resolve the outcome as soon as it's known (see below).
+            return self._await_checkout_outcome(page, attempted_purchase)
         except Exception as exc:  # noqa: BLE001
             if attempted_purchase:
                 self.log(f"Error after submitting the purchase ({exc}); not retrying.")
                 return "stop"
             self.log(f"Booking failed before purchase ({exc}); safe to retry.")
             return "retry"
+
+    def _await_checkout_outcome(self, page, attempted_purchase: bool) -> str:
+        """After clicking purchase, return "booked" / "taken" / "stop" / "retry".
+
+        Polls for whichever verdict lands first instead of blindly waiting out
+        the full timeout:
+          - the URL leaves the checkout route  -> "booked" (confirmation shown);
+          - the portal says the slot is gone   -> "taken" (a safe rejection —
+            nothing was bought, so the caller may try the next preferred time).
+        A lost race is therefore detected in ~1s rather than ~20s, freeing the
+        booker to grab the next time before it's taken too. Falling through to
+        the timeout means we never saw a verdict, so we "stop" (a purchase may
+        have gone through) rather than risk a double booking.
+        """
+        leaves = (self.cfg.checkout or {}).get("success_when_url_leaves", "/checkout")
+        timeout_s = float((self.cfg.checkout or {}).get("success_timeout_seconds", 20))
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                if leaves not in page.url:
+                    return "booked"
+            except Exception:  # noqa: BLE001
+                pass
+            if attempted_purchase and self._inventory_unavailable(page):
+                self.log("Portal rejected the purchase: that time was just taken.")
+                return "taken"
+            if time.monotonic() >= deadline:
+                return "stop" if attempted_purchase else "retry"
+            page.wait_for_timeout(500)
+
+    def _clear_cart(self, page) -> None:
+        """Best-effort empty the cart so a stale (now-unavailable) item can't
+        block or inflate the next checkout. Safe to call on an empty cart.
+
+        Needs the optional `cart_item` (kebab) + `cart_item_remove` selectors; if
+        either is unset it does nothing and we fall back to reopening the sheet —
+        the >1-item guard in `_book_via_cart` still prevents any over-booking.
+        """
+        s = self.cfg.selectors
+        kebab = s.get("cart_item")
+        remove = s.get("cart_item_remove")
+        if not kebab or not remove:
+            return
+        try:
+            for _ in range(6):  # bounded; remove one item per pass
+                if page.locator(kebab).count() == 0:
+                    break
+                page.locator(kebab).first.click()
+                page.locator(remove).first.click()
+                page.wait_for_timeout(300)
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- misc ------------------------------------------------------------------
 
