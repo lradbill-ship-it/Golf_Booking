@@ -157,14 +157,15 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ## 7. Open items / next steps
 
-- **Capture the `cart_item_remove` selector (Session 3).** The checkout-race
-  recovery (gotcha #7) tries the next preferred time when one is taken. To clear
-  the now-dead cart item before retrying it needs the TeeItUp cart kebab's
-  "remove" menu-item selector, set as `cart_item_remove` in the local
-  `config.yaml`. Grab it from the portal (open the cart kebab on an item, inspect
-  the remove option) and add it; until then recovery may be blocked by the
-  >1-item safety guard (no over-booking risk either way). Unit tests cover the
-  logic; the cart-clear DOM step still needs one live confirmation.
+- **`cart_item_remove` selector — captured & wired (Session 3).** The
+  checkout-race recovery (gotcha #7) clears a now-dead cart item before trying
+  the next preferred time. The kebab menu's Delete control is
+  `[data-testid^="delete-item-button-"]`, now set as `cart_item_remove` in the
+  local `config.yaml` and confirmed live (added a throwaway item to the cart and
+  deleted it — cart returned to empty). Unit tests cover the taken→retry logic;
+  the only thing still unverified end-to-end is a *real* lost race at the
+  release instant, which can't be staged — watch `logs/nightly.log` for the
+  first night it recovers to a later time.
 - **Release-time tracking is now automatic (Session 3).** Every genuine waited
   run appends a record to `state/release_history.jsonl` (when the sheet actually
   released vs. the nominal 00:01, whether it booked, how many checks). View it
