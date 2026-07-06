@@ -210,3 +210,78 @@ def test_inventory_unavailable_detects_marker():
     no = SimpleNamespace(inner_text=lambda _s: "Reservation confirmed!")
     assert b._inventory_unavailable(yes) is True
     assert b._inventory_unavailable(no) is False
+
+
+# -- _clear_cart: open the drawer, then delete each item --------------------- #
+
+class _FakeCartLocator:
+    def __init__(self, page, sel):
+        self.page, self.sel = page, sel
+
+    def count(self):
+        return self.page.counts.get(self.sel, 0)
+
+    @property
+    def first(self):
+        return self
+
+    def click(self):
+        self.page.clicks.append(self.sel)
+        if self.sel == self.page.opener:
+            # Opening the drawer reveals one kebab per cart item.
+            self.page.counts[self.page.kebab] = self.page.items
+        elif self.sel == self.page.remove:
+            self.page.items = max(0, self.page.items - 1)
+            self.page.counts[self.page.kebab] = self.page.items
+
+
+class _FakeCartPage:
+    def __init__(self, items, opener, kebab, remove, drawer_open=False):
+        self.items, self.opener, self.kebab, self.remove = items, opener, kebab, remove
+        # Cart icon is present while items exist; kebabs only once the drawer opens.
+        self.counts = {opener: 1 if items else 0, kebab: items if drawer_open else 0}
+        self.clicks = []
+
+    def locator(self, sel):
+        return _FakeCartLocator(self, sel)
+
+    def wait_for_selector(self, sel, timeout=0):
+        if self.counts.get(sel, 0) == 0:
+            raise Exception("not found")
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+def _cart_booker():
+    b = TeeBooker.__new__(TeeBooker)
+    b.cfg = SimpleNamespace(selectors={
+        "cart_open_button": "OPEN", "cart_item": "KEBAB", "cart_item_remove": "DEL",
+    })
+    b.log = lambda *a, **k: None
+    return b
+
+
+def test_clear_cart_opens_drawer_then_removes_all():
+    b = _cart_booker()
+    page = _FakeCartPage(items=2, opener="OPEN", kebab="KEBAB", remove="DEL")
+    b._clear_cart(page)
+    assert page.items == 0              # cart emptied
+    assert "OPEN" in page.clicks        # drawer was opened first
+    assert page.clicks.count("DEL") == 2
+
+
+def test_clear_cart_noop_without_selectors():
+    b = TeeBooker.__new__(TeeBooker)
+    b.cfg = SimpleNamespace(selectors={})  # nothing configured
+    b.log = lambda *a, **k: None
+    # Should simply return without touching the page.
+    b._clear_cart(_FakeCartPage(items=1, opener="OPEN", kebab="KEBAB", remove="DEL"))
+
+
+def test_clear_cart_skips_open_when_items_already_visible():
+    b = _cart_booker()
+    page = _FakeCartPage(items=1, opener="OPEN", kebab="KEBAB", remove="DEL", drawer_open=True)
+    b._clear_cart(page)
+    assert page.items == 0
+    assert "OPEN" not in page.clicks    # drawer already open — no need to click it

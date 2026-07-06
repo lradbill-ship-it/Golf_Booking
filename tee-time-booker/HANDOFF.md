@@ -56,7 +56,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **83 tests pass** (`.venv/bin/python -m pytest -q`).
+- **86 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -152,20 +152,28 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    now detects that message, returns `"taken"`, and tries the **next** preferred
    time (e.g. 7:10) — resolving the lost race in ~1s instead of waiting out the
    full confirmation timeout. To clean up the dead cart item before the retry it
-   needs the optional `cart_item_remove` selector in config.yaml; without it the
-   retry still runs but the >1-item guard may stop it (still safe — see §7).
+   reopens the tee sheet, opens the cart drawer (`cart_open_button`), and deletes
+   the item (`cart_item` kebab → `cart_item_remove`). If any of those selectors
+   is unset it skips clearing and the >1-item guard stops it (still safe).
+   **Bug found & fixed in the Session-3 audit:** the first version cleared the
+   cart while still on the *checkout* page, where the drawer controls don't
+   render, so the dead item survived and the retry hit the 2-item guard (this is
+   exactly what lost Jul 17 and Jul 19). Fix: reopen the sheet first, then open
+   the drawer via `cart_open_button` (`[data-testid="core-shopping-cart"]`, which
+   only renders when the cart is non-empty) before deleting.
 
 ## 7. Open items / next steps
 
-- **`cart_item_remove` selector — captured & wired (Session 3).** The
-  checkout-race recovery (gotcha #7) clears a now-dead cart item before trying
-  the next preferred time. The kebab menu's Delete control is
-  `[data-testid^="delete-item-button-"]`, now set as `cart_item_remove` in the
-  local `config.yaml` and confirmed live (added a throwaway item to the cart and
-  deleted it — cart returned to empty). Unit tests cover the taken→retry logic;
-  the only thing still unverified end-to-end is a *real* lost race at the
-  release instant, which can't be staged — watch `logs/nightly.log` for the
-  first night it recovers to a later time.
+- **Checkout-race recovery — cart-clear selectors captured & bug fixed (Session
+  3 audit).** Recovery (gotcha #7) clears a now-dead cart item before trying the
+  next preferred time, using `cart_open_button`
+  (`[data-testid="core-shopping-cart"]`), `cart_item`
+  (`[data-testid^="shopping-cart-kebab-button-"]`), and `cart_item_remove`
+  (`[data-testid^="delete-item-button-"]`) — all set in the local `config.yaml`.
+  The drawer-open + delete controls are confirmed live (added a throwaway item
+  and deleted it). **Still unverified end-to-end:** a *real* lost race at the
+  release instant (can't be staged) — watch `logs/nightly.log` for the first
+  night it logs a "taken" and then books a later time instead of a 2-item abort.
 - **Release-time tracking is now automatic (Session 3).** Every genuine waited
   run appends a record to `state/release_history.jsonl` (when the sheet actually
   released vs. the nominal 00:01, whether it booked, how many checks). View it
@@ -189,7 +197,7 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 83 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 86 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night

@@ -250,8 +250,11 @@ class TeeBooker:
                         f"[{elapsed:.0f}s] {label!r} was taken at checkout; clearing the "
                         "cart and trying the next preferred time."
                     )
-                    self._clear_cart(page)
+                    # Reopen the tee sheet FIRST: the cart-drawer controls only
+                    # render off the sheet's header (not the checkout page we're
+                    # on after a rejection), so clearing must happen there.
                     self._reopen(page, play_date)
+                    self._clear_cart(page)
                     if time.monotonic() >= deadline:
                         return BookingResult(
                             False,
@@ -610,16 +613,31 @@ class TeeBooker:
         """Best-effort empty the cart so a stale (now-unavailable) item can't
         block or inflate the next checkout. Safe to call on an empty cart.
 
-        Needs the optional `cart_item` (kebab) + `cart_item_remove` selectors; if
-        either is unset it does nothing and we fall back to reopening the sheet —
-        the >1-item guard in `_book_via_cart` still prevents any over-booking.
+        The per-item kebab + delete controls only exist INSIDE the cart drawer,
+        so this first opens the drawer (via `cart_open_button`) when the items
+        aren't already visible, then removes them one by one. Needs
+        `cart_open_button` + `cart_item` (kebab) + `cart_item_remove`; if any is
+        unset it does nothing and we fall back to the >1-item guard in
+        `_book_via_cart`, which still prevents any over-booking.
         """
         s = self.cfg.selectors
+        opener = s.get("cart_open_button")
         kebab = s.get("cart_item")
         remove = s.get("cart_item_remove")
-        if not kebab or not remove:
+        if not opener or not kebab or not remove:
             return
         try:
+            # Open the drawer if its items aren't already on screen. The cart
+            # icon only renders when the cart is non-empty, so its absence means
+            # there's nothing to clear.
+            if page.locator(kebab).count() == 0:
+                if page.locator(opener).count() == 0:
+                    return
+                page.locator(opener).first.click()
+                try:
+                    page.wait_for_selector(kebab, timeout=5_000)
+                except Exception:  # noqa: BLE001
+                    return  # drawer didn't open / already empty
             for _ in range(6):  # bounded; remove one item per pass
                 if page.locator(kebab).count() == 0:
                     break

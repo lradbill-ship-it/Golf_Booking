@@ -105,9 +105,12 @@ selectors:
   cart_item: ""
   # Optional: if a preferred time is taken by someone else mid-checkout, the
   # booker tries the next preferred time. To do that cleanly it first clears the
-  # cart of the now-unavailable item using this selector (the kebab menu's
-  # "remove"/"delete" item, opened by clicking `cart_item`). Leave blank to skip
-  # cart-clearing — the >1-item guard above still prevents any over-booking.
+  # cart of the now-unavailable item. The kebab + delete controls live inside the
+  # cart drawer, so recovery needs ALL THREE of: `cart_open_button` (header cart
+  # icon that opens the drawer), `cart_item` (per-item kebab), and
+  # `cart_item_remove` (the kebab menu's remove/delete item). Leave any blank to
+  # skip cart-clearing — the >1-item guard above still prevents any over-booking.
+  cart_open_button: ""
   cart_item_remove: ""
   # Button to start checkout from the cart drawer/page.
   cart_checkout_button: ""
