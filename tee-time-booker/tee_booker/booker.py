@@ -67,7 +67,7 @@ class TeeBooker:
             context.route("**/*", self._maybe_block)
             page = context.new_page()
             try:
-                self._login(page)
+                self._login_resiliently(page)
                 if release_at is not None and tz is not None and not dry_run:
                     from .scheduler import seconds_until, wait_until
                     remaining = seconds_until(release_at, tz)
@@ -112,6 +112,48 @@ class TeeBooker:
         from .session import login
 
         login(page, self.cfg, self.creds, log=self.log)
+
+    # Playwright wraps low-level connectivity failures with these net:: codes.
+    _NETWORK_ERROR_MARKERS = (
+        "err_internet_disconnected", "err_name_not_resolved", "err_connection",
+        "err_timed_out", "err_network_changed", "err_address_unreachable",
+        "err_proxy_connection_failed", "err_network_access_denied",
+    )
+
+    def _looks_like_network_error(self, exc) -> bool:
+        msg = str(exc).lower()
+        return "net::" in msg or any(m in msg for m in self._NETWORK_ERROR_MARKERS)
+
+    def _login_resiliently(self, page) -> None:
+        """Log in, riding out a transient loss of internet at login time.
+
+        The nightly job logs in ~60s before the nominal release, but the sheet
+        doesn't actually release for ~13 min, so a brief connectivity blip at
+        00:00 (e.g. the Mac's Wi-Fi hasn't reconnected) shouldn't kill the whole
+        night. On a *network* error we wait and retry until `login_retry_seconds`
+        is exhausted; any other error is re-raised immediately.
+        """
+        # Note: use explicit None checks, not `or` — a configured 0 is a real
+        # value (disable retries / no wait), not a signal to fall back.
+        budget = getattr(self.cfg.release, "login_retry_seconds", 0)
+        budget = float(budget) if budget is not None else 0.0
+        interval = getattr(self.cfg.release, "login_retry_interval_seconds", 10.0)
+        interval = float(interval) if interval is not None else 10.0
+        deadline = time.monotonic() + budget
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                self._login(page)
+                return
+            except Exception as exc:  # noqa: BLE001
+                if not self._looks_like_network_error(exc) or time.monotonic() >= deadline:
+                    raise
+                self.log(
+                    f"Login attempt {attempt} failed — no connectivity ({exc}). "
+                    f"Retrying in {interval:.0f}s ..."
+                )
+                time.sleep(interval)
 
     def _open_tee_sheet(self, page, play_date: date_cls, *, allow_relogin: bool = True) -> None:
         url = self.cfg.tee_sheet_url_for(play_date)

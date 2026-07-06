@@ -59,6 +59,13 @@ class ReleaseConfig:
     # Seconds between retries. Keep this gentle — reloading too fast trips the
     # site's rate limiter (Cloudflare 1015) and gets the booker temporarily banned.
     retry_interval_seconds: float = 6.0
+    # If the Mac has no internet at login time (e.g. Wi-Fi hasn't reconnected at
+    # 00:00), keep retrying the login this many seconds before giving up. There's
+    # ~13 min of slack before the sheet actually releases, so a brief blip is
+    # survivable. 0 disables the retry (fail on the first network error).
+    login_retry_seconds: int = 300
+    # Gentle gap between login retries when offline.
+    login_retry_interval_seconds: float = 10.0
 
     @property
     def tz(self) -> ZoneInfo:

@@ -43,6 +43,11 @@ release:
   # long windows; the booker also blocks images/fonts/analytics and backs off
   # on rate-limit blocks to stay under Cloudflare's limiter.
   retry_interval_seconds: 15.0
+  # If the machine has no internet at login time (e.g. Wi-Fi hasn't reconnected
+  # at midnight), keep retrying the login this many seconds before giving up —
+  # there's usually slack before the sheet actually releases. 0 disables it.
+  login_retry_seconds: 300
+  login_retry_interval_seconds: 10.0
 
 # What you want to book.
 booking:

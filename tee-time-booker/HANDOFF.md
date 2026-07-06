@@ -56,7 +56,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **86 tests pass** (`.venv/bin/python -m pytest -q`).
+- **90 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -161,6 +161,13 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    exactly what lost Jul 17 and Jul 19). Fix: reopen the sheet first, then open
    the drawer via `cart_open_button` (`[data-testid="core-shopping-cart"]`, which
    only renders when the cart is non-empty) before deleting.
+8. **No internet at login time is survivable now** (Session-3 audit: the Jul 16
+   run died at 00:00 with `net::ERR_INTERNET_DISCONNECTED` — the Mac's Wi-Fi
+   hadn't reconnected). Login is now retried on network errors for
+   `release.login_retry_seconds` (default 300s, gentle 10s gap) before giving up;
+   non-network errors still fail fast. There's ~13 min of slack before the sheet
+   releases, so a brief blip no longer loses the night. If the Mac's Wi-Fi drops
+   nightly, address that at the OS level too.
 
 ## 7. Open items / next steps
 
@@ -197,7 +204,7 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 86 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 90 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night

@@ -285,3 +285,59 @@ def test_clear_cart_skips_open_when_items_already_visible():
     b._clear_cart(page)
     assert page.items == 0
     assert "OPEN" not in page.clicks    # drawer already open — no need to click it
+
+
+# -- resilient login: ride out a transient loss of internet ------------------ #
+
+def _login_booker(retry_seconds=60):
+    b = TeeBooker.__new__(TeeBooker)
+    b.cfg = SimpleNamespace(release=SimpleNamespace(
+        login_retry_seconds=retry_seconds, login_retry_interval_seconds=0.0))
+    b.log = lambda *a, **k: None
+    return b
+
+
+def test_looks_like_network_error():
+    b = TeeBooker.__new__(TeeBooker)
+    assert b._looks_like_network_error(Exception("net::ERR_INTERNET_DISCONNECTED at https://x/login")) is True
+    assert b._looks_like_network_error(Exception("ERR_NAME_NOT_RESOLVED")) is True
+    assert b._looks_like_network_error(Exception("Timeout 20000ms exceeded")) is False
+
+
+def test_login_retries_through_a_network_blip():
+    b = _login_booker(retry_seconds=60)
+    calls = {"n": 0}
+
+    def flaky(_page):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise Exception("net::ERR_INTERNET_DISCONNECTED at https://x/login")
+
+    b._login = flaky
+    b._login_resiliently(object())
+    assert calls["n"] == 3
+
+
+def test_login_reraises_non_network_error_immediately():
+    b = _login_booker(retry_seconds=60)
+
+    def bad(_page):
+        raise ValueError("bad selector")
+
+    b._login = bad
+    with pytest.raises(ValueError):
+        b._login_resiliently(object())
+
+
+def test_login_gives_up_when_budget_exhausted():
+    b = _login_booker(retry_seconds=0)  # no budget => fail on first network error
+    calls = {"n": 0}
+
+    def down(_page):
+        calls["n"] += 1
+        raise Exception("net::ERR_INTERNET_DISCONNECTED")
+
+    b._login = down
+    with pytest.raises(Exception):
+        b._login_resiliently(object())
+    assert calls["n"] == 1
