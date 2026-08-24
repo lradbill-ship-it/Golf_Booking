@@ -63,6 +63,28 @@ booking:
     - "07:50 AM"
   players: 4
 
+  # What to do when NONE of preferred_times is bookable. Tee sheets move with
+  # sunrise — a 6:30 AM slot that exists in June simply stops being published in
+  # late August — so without this the booker would book nothing on exactly the
+  # nights the early times shifted. With it, it takes the bookable slot closest
+  # to what you asked for (the earlier one wins a tie), which in the sunrise
+  # case is just "the earliest time on the sheet".
+  fallback:
+    enabled: true
+    # How far outside your preferred times a fallback may sit. Measured from
+    # the EARLIEST preferred time going back, and the LATEST going forward — so
+    # with 6:30-7:20 preferred, the default window is 5:30 AM - 9:20 AM.
+    # Tighten max_minutes_later if you'd rather not play than play late.
+    max_minutes_earlier: 60
+    max_minutes_later: 120
+    # Hold the fallback back this many seconds into the polling window, to give
+    # your preferred times a head start. 0 = consider it as soon as the sheet
+    # is up (recommended: if the time doesn't exist, waiting only loses ground).
+    after_seconds: 0
+    # Before settling for second best, pause this long and re-scan the
+    # preferred times once — cheap insurance against a half-rendered sheet.
+    recheck_seconds: 3
+
 # CSS selectors for your club's portal. Replace the placeholders.
 selectors:
   username: "#username"

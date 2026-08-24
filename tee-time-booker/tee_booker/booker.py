@@ -33,6 +33,10 @@ class BookingResult:
     # the nightly run to log the real release time. None if it never released.
     release_detected_at: Optional[datetime] = None
     attempts: int = 0
+    # The earliest tee time published on the sheet that night, bookable or not.
+    # Purely observational — it's how you notice sunrise pushing the first tee
+    # time from 6:30 to 7:00 and move `preferred_times` deliberately.
+    earliest_time: Optional[str] = None
 
 
 class TeeBooker:
@@ -78,15 +82,23 @@ class TeeBooker:
                 self._open_tee_sheet(page, play_date)
                 if dry_run:
                     slot = self._find_available_slot(page)
+                    note = ""
+                    if slot is None:
+                        # Show the same compromise the real run would make.
+                        found = self._find_fallback_slot(page)
+                        if found is not None:
+                            slot, _label, offset = found
+                            note = f" (closest available — {self._describe_offset(offset)})"
                     if slot is None:
                         return BookingResult(
-                            False, message="DRY RUN: no preferred time visible yet."
+                            False,
+                            message="DRY RUN: nothing bookable in range visible yet.",
                         )
                     label = self._slot_label_text(slot)
                     return BookingResult(
                         True,
                         booked_time=label,
-                        message=f"DRY RUN: would book {label!r} (no click made).",
+                        message=f"DRY RUN: would book {label!r}{note} (no click made).",
                     )
                 return self._attempt_booking(page, play_date)
             except Exception as exc:  # noqa: BLE001
@@ -197,6 +209,35 @@ class TeeBooker:
             page.wait_for_load_state("networkidle")
 
     def _attempt_booking(self, page, play_date=None) -> BookingResult:
+        """Poll and book, then attach the night's earliest-published tee time."""
+        self._earliest_seen = None
+        result = self._poll_and_book(page, play_date)
+        if self._earliest_seen:
+            result.earliest_time = self._earliest_seen[1]
+        return result
+
+    def _earliest_slot(self, page, current=None):
+        """The earliest tee time on the sheet, as (minutes, label).
+
+        Counts every published slot, bookable or not: the question this answers
+        is "when does the sheet start now?", which is what shifts with sunrise.
+        `current` is the best seen so far, so it survives across poll checks.
+        """
+        best = current
+        try:
+            slots = page.locator(self.cfg.selectors["time_slot"])
+            for i in range(slots.count()):
+                label = self._slot_label_text(slots.nth(i))
+                minutes = self._parse_time_minutes(label)
+                if minutes is None:
+                    continue
+                if best is None or minutes < best[0]:
+                    best = (minutes, label)
+        except Exception:  # noqa: BLE001
+            pass  # observational only — never let it break a booking
+        return best
+
+    def _poll_and_book(self, page, play_date=None) -> BookingResult:
         """Poll for a preferred slot, then book exactly ONE.
 
         Keeps gently re-checking from the moment it starts until a booking lands
@@ -248,23 +289,38 @@ class TeeBooker:
                 self._open_tee_sheet(page, play_date, allow_relogin=False)
 
             cards = self._slot_count(page)
+            if cards > 0:
+                self._earliest_seen = self._earliest_slot(page, self._earliest_seen)
             # First time the fresh sheet shows any cards = the actual release.
             if released_at is None and cards > 0:
                 released_at = datetime.now(getattr(self, "_tz", None))
+                first = self._earliest_seen[1] if self._earliest_seen else "unknown"
                 self.log(
                     f"[{elapsed:.0f}s] Sheet released: {cards} card(s) appeared "
-                    f"at {released_at.strftime('%H:%M:%S')}."
+                    f"at {released_at.strftime('%H:%M:%S')}; earliest tee time on the "
+                    f"sheet is {first}."
                 )
             slot = self._find_available_slot(page, exclude=taken_labels)
+            fallback_note = ""
+            if slot is None and cards > 0:
+                slot, fallback_note = self._consider_fallback(
+                    page, taken_labels, elapsed=elapsed
+                )
             if slot is not None:
                 label = self._slot_label_text(slot)
-                self.log(f"[{elapsed:.0f}s] Found {label!r} (check #{attempt}); booking once...")
+                self.log(
+                    f"[{elapsed:.0f}s] check #{attempt}: found {label!r}{fallback_note}; "
+                    "booking once..."
+                )
                 status = self._book_slot(page, slot)
                 if status == "booked":
                     return BookingResult(
                         True,
                         booked_time=label,
-                        message=f"Booked {label} for {self.cfg.booking.players} players.",
+                        message=(
+                            f"Booked {label} for "
+                            f"{self.cfg.booking.players} players{fallback_note}."
+                        ),
                         screenshot=self._screenshot(page, "confirmed"),
                         release_detected_at=released_at,
                         attempts=attempt,
@@ -312,17 +368,20 @@ class TeeBooker:
                 self.log(f"[{elapsed:.0f}s] Couldn't secure {label} (no booking made); will retry.")
             else:
                 self.log(
-                    f"[{elapsed:.0f}s] check #{attempt}: {cards} card(s), no preferred "
-                    "time bookable yet — waiting for the fresh sheet."
+                    f"[{elapsed:.0f}s] check #{attempt}: {cards} card(s), nothing "
+                    "bookable in range yet — waiting for the fresh sheet."
                 )
 
             if time.monotonic() >= deadline:
                 return BookingResult(
                     False,
                     message=(
-                        f"No preferred time became bookable within "
-                        f"{self.cfg.release.retry_window_seconds}s ({attempt} checks). The "
-                        "sheet may not have released in time, or the times were taken."
+                        f"Nothing bookable within {self.cfg.release.retry_window_seconds}s "
+                        f"({attempt} checks) — no preferred time, and "
+                        + (f"nothing in the {window} fallback range either"
+                           if (window := self.fallback_window()) else "no fallback is set")
+                        + ". The sheet may not have released in time, or everything "
+                        "was taken."
                     ),
                     screenshot=self._screenshot(page, "no_slot"),
                     release_detected_at=released_at,
@@ -443,6 +502,140 @@ class TeeBooker:
                     if slot.locator(s["book_button"]).count() > 0 and self._slot_allows_players(slot):
                         return slot
         return None
+
+    def fallback_window(self) -> Optional[str]:
+        """The clock range the fallback may search, e.g. "5:30 AM - 9:20 AM".
+
+        None when there is no fallback to describe — it's switched off, or the
+        preferred times have no parseable clock time to measure "closest" from.
+        Used by the nightly `--plan` output as well as the failure message.
+        """
+        fb = getattr(self.cfg.booking, "fallback", None)
+        if fb is None or not fb.enabled:
+            return None
+        wanted = [m for m in (self._parse_time_minutes(t)
+                              for t in self.cfg.booking.preferred_times) if m is not None]
+        if not wanted:
+            return None
+        lo, hi = min(wanted) - fb.max_minutes_earlier, max(wanted) + fb.max_minutes_later
+        return f"{self._fmt_minutes(lo)} - {self._fmt_minutes(hi)}"
+
+    @staticmethod
+    def _fmt_minutes(minutes: int) -> str:
+        """Minutes-since-midnight back to a '6:30 AM' style label."""
+        minutes %= 24 * 60
+        hour, minute = divmod(minutes, 60)
+        suffix = "AM" if hour < 12 else "PM"
+        return f"{(hour % 12) or 12}:{minute:02d} {suffix}"
+
+    def _consider_fallback(self, page, exclude, *, elapsed: float):
+        """Settle for the closest bookable time once preferred ones are a dead end.
+
+        Returns (slot_or_None, note) where note describes the compromise for the
+        log and the confirmation message.
+        """
+        fb = getattr(self.cfg.booking, "fallback", None)
+        if fb is None or not fb.enabled or elapsed < fb.after_seconds:
+            return None, ""
+        found = self._find_fallback_slot(page, exclude=exclude)
+        if found is None:
+            return None, ""
+        # A half-rendered sheet can briefly hide a preferred slot's book button,
+        # so don't settle on the first look: pause, then check the preferred
+        # times once more. Cheap next to booking a worse time by mistake.
+        if fb.recheck_seconds > 0:
+            self.log(
+                f"[{elapsed:.0f}s] No preferred time bookable — re-checking in "
+                f"{fb.recheck_seconds:.0f}s before settling for the closest."
+            )
+            time.sleep(fb.recheck_seconds)
+            preferred = self._find_available_slot(page, exclude=exclude)
+            if preferred is not None:
+                return preferred, ""  # it was there after all
+            found = self._find_fallback_slot(page, exclude=exclude)
+            if found is None:
+                return None, ""
+        _slot, _label, offset = found
+        return _slot, f" (closest available — {self._describe_offset(offset)})"
+
+    def _find_fallback_slot(self, page, exclude=None):
+        """The bookable slot closest to the preferred times, when none is free.
+
+        Tee sheets drift with sunrise — a 6:30 AM time that existed in June is
+        simply not published in late August — so an exact-match-only booker
+        books nothing on precisely the nights the early times moved. This ranks
+        every bookable slot by how far it sits from the nearest preferred time
+        and takes the closest, with the EARLIER slot winning a tie. When the
+        sheet now starts after the desired time (the sunrise case), that is just
+        "the earliest time available".
+
+        Candidates are bounded to `max_minutes_earlier` before the first
+        preferred time and `max_minutes_later` after the last, so a wiped-out
+        morning never turns into an afternoon round. Returns (slot, label,
+        minutes_from_preferred) or None.
+        """
+        fb = getattr(self.cfg.booking, "fallback", None)
+        if fb is None or not fb.enabled:
+            return None
+        wanted = [m for m in (self._parse_time_minutes(t)
+                              for t in self.cfg.booking.preferred_times) if m is not None]
+        if not wanted:
+            return None  # nothing to measure "closest" against
+        earliest_ok = min(wanted) - fb.max_minutes_earlier
+        latest_ok = max(wanted) + fb.max_minutes_later
+
+        exclude = exclude or set()
+        s = self.cfg.selectors
+        slots = page.locator(s["time_slot"])
+        best = None  # ((distance, minutes), index, label, signed_offset)
+        for i in range(slots.count()):
+            slot = slots.nth(i)
+            label = self._slot_label_text(slot)
+            minutes = self._parse_time_minutes(label)
+            if minutes is None or not (earliest_ok <= minutes <= latest_ok):
+                continue
+            if self._normalize(label) in exclude:
+                continue  # already lost this one at checkout
+            if slot.locator(s["book_button"]).count() == 0 or not self._slot_allows_players(slot):
+                continue
+            nearest = min(wanted, key=lambda w: (abs(minutes - w), w))
+            # Sort by distance, then by clock time: the earlier slot wins a tie.
+            key = (abs(minutes - nearest), minutes)
+            if best is None or key < best[0]:
+                best = (key, i, label, minutes - nearest)
+        if best is None:
+            return None
+        return slots.nth(best[1]), best[2], best[3]
+
+    @staticmethod
+    def _parse_time_minutes(text: str) -> Optional[int]:
+        """Minutes since midnight from a label like '6:30 AM', '7:05pm', '06:30'.
+
+        Slot labels often carry more than the time (price, party size), so this
+        takes the first clock time it finds. Returns None if there isn't one.
+        """
+        if not text:
+            return None
+        m = re.search(r"(\d{1,2}):([0-5]\d)\s*([ap])\.?\s?m\.?", text, re.I)
+        if m:
+            hour, minute = int(m.group(1)), int(m.group(2))
+            if not 1 <= hour <= 12:
+                return None
+            hour %= 12
+            if m.group(3).lower() == "p":
+                hour += 12
+            return hour * 60 + minute
+        m = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)  # 24-hour
+        if m:
+            return int(m.group(1)) * 60 + int(m.group(2))
+        return None
+
+    @staticmethod
+    def _describe_offset(minutes: int) -> str:
+        """'20 min later' / '10 min earlier' / 'exactly on time'."""
+        if minutes == 0:
+            return "at a preferred time"
+        return f"{abs(minutes)} min {'later' if minutes > 0 else 'earlier'} than preferred"
 
     def _slot_allows_players(self, slot) -> bool:
         """Whether this slot's allowed party size includes booking.players."""

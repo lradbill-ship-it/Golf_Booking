@@ -89,7 +89,7 @@ def test_no_slot_never_books():
     res = b._attempt_booking(_FakePage())
     assert res.success is False
     assert b.book_calls == 0
-    assert "no preferred time" in res.message.lower()
+    assert "nothing bookable" in res.message.lower()
 
 
 def test_result_reports_attempt_count():
