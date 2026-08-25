@@ -96,16 +96,22 @@ booking:
   fallback:
     enabled: true
     max_minutes_earlier: 60    # window starts at 5:30 AM (6:30 − 60)
-    max_minutes_later: 120     # window ends at 8:50 AM (6:50 + 120)
+    max_minutes_later: null    # no cap on the late side — always book something
     after_seconds: 0           # consider it as soon as the sheet is up
     recheck_seconds: 3         # re-scan preferred times once before settling
 ```
 
-The bounds are what keep a wiped-out morning from becoming an afternoon round:
-nothing outside the window is ever booked, and a night with nothing in range
-ends with no booking, exactly as before. Tighten `max_minutes_later` if you'd
-rather not play at all than play late; set `enabled: false` for the old
-exact-match-only behavior.
+`max_minutes_later: null` is the **always-book rule**, and the default:
+whatever happens to the morning, the booker comes away with the nearest
+available time, even if that is hours later — an afternoon round beats no
+round. Set a number instead (`120`, say) if you would rather end the night
+unbooked than play far off target; then nothing outside the window is booked
+and a night with nothing in range ends empty. `0` means no slack at all on
+that side, and `enabled: false` restores exact-match-only behavior.
+
+"Nearest" is unaffected by the bounds: with 7:00 AM preferred and 8:15 AM,
+11:30 AM and 2:00 PM open, it books 8:15 AM. No cap never means "grab the
+first thing on the sheet".
 
 The log and the confirmation say when a fallback was used, e.g.
 `Booked 7:00 AM for 2 players (closest available — 30 min later than preferred)`.

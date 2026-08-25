@@ -110,8 +110,8 @@ def main(argv=None) -> int:
         cfg.booking.players = players
         window = TeeBooker(cfg, None, log=_stamp).fallback_window()
         _stamp(
-            f"If none of those is bookable, it books the closest available time "
-            f"in the {window} range."
+            f"If none of those is bookable, it books the closest available "
+            f"time — {window}."
             if window
             else "If none of those is bookable, nothing gets booked "
                  "(booking.fallback is off)."

@@ -72,11 +72,15 @@ booking:
   fallback:
     enabled: true
     # How far outside your preferred times a fallback may sit. Measured from
-    # the EARLIEST preferred time going back, and the LATEST going forward — so
-    # with 6:30-7:20 preferred, the default window is 5:30 AM - 9:20 AM.
-    # Tighten max_minutes_later if you'd rather not play than play late.
+    # the EARLIEST preferred time going back, and the LATEST going forward.
+    #
+    # max_minutes_later: null is the always-book rule — take the nearest
+    # available time however late it lands, on the view that an afternoon round
+    # beats no round. This is the default. Put a number here instead (e.g. 120)
+    # if you would rather come away with nothing than play hours off target.
+    # Either side accepts null for "no bound"; 0 means no slack at all.
     max_minutes_earlier: 60
-    max_minutes_later: 120
+    max_minutes_later: null
     # Hold the fallback back this many seconds into the polling window, to give
     # your preferred times a head start. 0 = consider it as soon as the sheet
     # is up (recommended: if the time doesn't exist, waiting only loses ground).

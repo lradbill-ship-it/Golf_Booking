@@ -378,7 +378,7 @@ class TeeBooker:
                     message=(
                         f"Nothing bookable within {self.cfg.release.retry_window_seconds}s "
                         f"({attempt} checks) — no preferred time, and "
-                        + (f"nothing in the {window} fallback range either"
+                        + (f"nothing bookable in the fallback range ({window}) either"
                            if (window := self.fallback_window()) else "no fallback is set")
                         + ". The sheet may not have released in time, or everything "
                         "was taken."
@@ -504,11 +504,13 @@ class TeeBooker:
         return None
 
     def fallback_window(self) -> Optional[str]:
-        """The clock range the fallback may search, e.g. "5:30 AM - 9:20 AM".
+        """The clock range the fallback may search, in words.
 
-        None when there is no fallback to describe — it's switched off, or the
-        preferred times have no parseable clock time to measure "closest" from.
-        Used by the nightly `--plan` output as well as the failure message.
+        Reads as "5:30 AM - 9:20 AM" when both sides are bounded, "5:30 AM or
+        later" when only the late side is open, and "any published time" when
+        neither is capped. None when there is no fallback to describe — it's
+        switched off, or the preferred times have no parseable clock time to
+        measure "closest" from. Used by `--plan` and the failure message.
         """
         fb = getattr(self.cfg.booking, "fallback", None)
         if fb is None or not fb.enabled:
@@ -517,8 +519,17 @@ class TeeBooker:
                               for t in self.cfg.booking.preferred_times) if m is not None]
         if not wanted:
             return None
-        lo, hi = min(wanted) - fb.max_minutes_earlier, max(wanted) + fb.max_minutes_later
-        return f"{self._fmt_minutes(lo)} - {self._fmt_minutes(hi)}"
+        lo = (None if fb.max_minutes_earlier is None
+              else self._fmt_minutes(min(wanted) - fb.max_minutes_earlier))
+        hi = (None if fb.max_minutes_later is None
+              else self._fmt_minutes(max(wanted) + fb.max_minutes_later))
+        if lo and hi:
+            return f"{lo} - {hi}"
+        if lo:
+            return f"{lo} or later"
+        if hi:
+            return f"up to {hi}"
+        return "any published time"
 
     @staticmethod
     def _fmt_minutes(minutes: int) -> str:
@@ -570,9 +581,9 @@ class TeeBooker:
         "the earliest time available".
 
         Candidates are bounded to `max_minutes_earlier` before the first
-        preferred time and `max_minutes_later` after the last, so a wiped-out
-        morning never turns into an afternoon round. Returns (slot, label,
-        minutes_from_preferred) or None.
+        preferred time and `max_minutes_later` after the last; either bound may
+        be None, meaning that side is unbounded and any published time
+        qualifies. Returns (slot, label, minutes_from_preferred) or None.
         """
         fb = getattr(self.cfg.booking, "fallback", None)
         if fb is None or not fb.enabled:
@@ -581,8 +592,10 @@ class TeeBooker:
                               for t in self.cfg.booking.preferred_times) if m is not None]
         if not wanted:
             return None  # nothing to measure "closest" against
-        earliest_ok = min(wanted) - fb.max_minutes_earlier
-        latest_ok = max(wanted) + fb.max_minutes_later
+        earliest_ok = (None if fb.max_minutes_earlier is None
+                       else min(wanted) - fb.max_minutes_earlier)
+        latest_ok = (None if fb.max_minutes_later is None
+                     else max(wanted) + fb.max_minutes_later)
 
         exclude = exclude or set()
         s = self.cfg.selectors
@@ -592,7 +605,11 @@ class TeeBooker:
             slot = slots.nth(i)
             label = self._slot_label_text(slot)
             minutes = self._parse_time_minutes(label)
-            if minutes is None or not (earliest_ok <= minutes <= latest_ok):
+            if minutes is None:
+                continue
+            if earliest_ok is not None and minutes < earliest_ok:
+                continue
+            if latest_ok is not None and minutes > latest_ok:
                 continue
             if self._normalize(label) in exclude:
                 continue  # already lost this one at checkout

@@ -147,14 +147,15 @@ def test_distance_is_measured_to_the_nearest_preferred_time():
     assert _pick(["6:30 AM", "7:20 AM"], ["6:50 AM", "7:30 AM"]) == "7:30 AM"
 
 
-def test_nothing_close_enough_books_nothing():
-    # Only an afternoon time left, well past the +120 min bound.
-    assert _pick(["6:30 AM"], ["1:00 PM"]) is None
+def test_a_late_bound_refuses_anything_past_it():
+    # Only an afternoon time left, well past an explicit +120 min bound.
+    assert _pick(["6:30 AM"], ["1:00 PM"], max_minutes_later=120) is None
 
 
 def test_later_bound_is_measured_from_the_last_preferred_time():
-    assert _pick(["6:30 AM", "7:20 AM"], ["9:00 AM"]) == "9:00 AM"     # 7:20 + 100
-    assert _pick(["6:30 AM", "7:20 AM"], ["9:30 AM"]) is None          # 7:20 + 130
+    kw = {"max_minutes_later": 120}
+    assert _pick(["6:30 AM", "7:20 AM"], ["9:00 AM"], **kw) == "9:00 AM"   # 7:20 + 100
+    assert _pick(["6:30 AM", "7:20 AM"], ["9:30 AM"], **kw) is None        # 7:20 + 130
 
 
 def test_earlier_bound_is_respected():
@@ -241,9 +242,15 @@ def test_after_seconds_holds_the_fallback_back():
     assert b._consider_fallback(page, set(), elapsed=61)[0] is not None
 
 
-def test_fallback_window_names_the_bounds():
-    b, _ = _booker(["6:30 AM", "7:20 AM"], [])
-    assert b.fallback_window() == "5:30 AM - 9:20 AM"
+@pytest.mark.parametrize("kw,expected", [
+    ({"max_minutes_later": 120}, "5:30 AM - 9:20 AM"),
+    ({}, "5:30 AM or later"),                                   # the default
+    ({"max_minutes_earlier": None, "max_minutes_later": 120}, "up to 9:20 AM"),
+    ({"max_minutes_earlier": None}, "any published time"),
+])
+def test_fallback_window_describes_each_combination_of_bounds(kw, expected):
+    b, _ = _booker(["6:30 AM", "7:20 AM"], [], **kw)
+    assert b.fallback_window() == expected
 
 
 @pytest.mark.parametrize("preferred,kw", [
@@ -278,14 +285,15 @@ def test_poll_loop_books_the_fallback_exactly_once():
 
 
 def test_poll_loop_books_nothing_when_no_slot_is_close_enough():
-    b, page = _booker(["6:30 AM"], [_FakeSlot("2:00 PM")], recheck_seconds=0)
+    b, page = _booker(["6:30 AM"], [_FakeSlot("2:00 PM")], recheck_seconds=0,
+                      max_minutes_later=120)
     b._find_available_slot = lambda page, exclude=None: None
     b._slot_count = lambda page: 1
     b._is_blocked = lambda page: False
     b._book_slot = lambda page, slot: pytest.fail("must not book an afternoon time")
     res = b._attempt_booking(page)
     assert res.success is False
-    assert "5:30 AM - 8:30 AM fallback range" in res.message   # says what it looked at
+    assert "fallback range (5:30 AM - 8:30 AM)" in res.message   # says what it looked at
 
 
 # -- config -----------------------------------------------------------------
@@ -378,3 +386,49 @@ def test_end_to_end_sunrise_night_books_the_new_first_tee_time():
     assert res.booked_time == "7:00 AM"
     assert res.earliest_time == "6:50 AM"            # how far the sheet has drifted
     assert "10 min later than preferred" in res.message
+
+
+# -- the always-book rule (no cap on how late) ------------------------------
+
+def test_unbounded_late_side_takes_an_afternoon_time_rather_than_nothing():
+    # The standing rule: book *something*. A 2 PM round beats no round.
+    assert _pick(["6:30 AM"], ["2:00 PM"]) == "2:00 PM"
+
+
+def test_unbounded_is_the_default():
+    assert FallbackConfig().max_minutes_later is None
+
+
+def test_unbounded_still_prefers_the_nearest_time():
+    # "No cap" must not become "grab the first thing on the sheet".
+    assert _pick(["7:00 AM"], ["2:00 PM", "8:15 AM", "11:30 AM"]) == "8:15 AM"
+
+
+def test_unbounded_late_side_still_honours_the_early_bound():
+    # Nothing stops the sheet listing a 4 AM slot; 60 min earlier is still the cap.
+    assert _pick(["7:00 AM"], ["4:00 AM", "9:00 PM"]) == "9:00 PM"
+
+
+def test_poll_loop_books_a_far_later_time_under_the_always_book_rule():
+    slots = [_FakeSlot("1:40 PM"), _FakeSlot("3:00 PM")]
+    b, page = _booker(["6:30 AM", "6:40 AM"], slots, recheck_seconds=0)
+    b._find_available_slot = lambda page, exclude=None: None
+    b._slot_count = lambda page: len(slots)
+    b._is_blocked = lambda page: False
+    booked = []
+    b._book_slot = lambda page, slot: (booked.append(b._slot_label_text(slot)), "booked")[1]
+    res = b._attempt_booking(page)
+    assert res.success is True
+    assert booked == ["1:40 PM"]
+    assert "420 min later than preferred" in res.message
+
+
+@pytest.mark.parametrize("bad", [{"max_minutes_later": -1}, {"max_minutes_earlier": -30}])
+def test_negative_bounds_are_rejected(bad):
+    with pytest.raises(ConfigError):
+        FallbackConfig(**bad)
+
+
+def test_zero_bound_is_allowed_and_means_no_slack():
+    # 0 is a real setting (exact range only), distinct from None (no bound).
+    assert _pick(["6:30 AM"], ["6:31 AM"], max_minutes_later=0) is None

@@ -13,11 +13,11 @@ This machine is set up to book tee times automatically at the 12:01 AM release.
   **Mondays skipped**. Edit `weekly_schedule` in `config.yaml` to change it.
 
   **If none of that weekday's times is bookable** — which is what happens once
-  sunrise pushes the sheet past 6:30 AM — it books the **closest available time**
-  instead of nothing, bounded by `booking.fallback` (default: 60 min earlier to
-  120 min later than the day's times). `python nightly.py --plan` prints the
-  exact window it would use tonight. See README → *Falling back to the closest
-  time*.
+  sunrise pushes the sheet past 6:30 AM — it books the **closest available
+  time** instead of nothing. The standing rule here is *always book*:
+  `booking.fallback.max_minutes_later` is `null`, so it takes the nearest time
+  however late it lands. `python nightly.py --plan` prints the window it would
+  use tonight. See README → *Falling back to the closest time*.
 
   **Watch the drift:** `python nightly.py --history` now has a **`1st tee`**
   column — the earliest time the sheet published each night. When that has moved
