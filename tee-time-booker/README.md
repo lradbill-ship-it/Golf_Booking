@@ -22,6 +22,9 @@ project.
    waits for it with sub-second precision, then races to grab the first
    acceptable time from your `preferred_times` list, retrying for a configurable
    window.
+4. If none of those times is bookable, it takes the closest available time
+   instead (see **Falling back to the closest time** below) rather than coming
+   away with nothing.
 
 ## Setup
 
@@ -71,10 +74,55 @@ See `config.example.yaml` — every field is commented. Key sections:
 
 - `club` — login + tee-sheet URLs and the date format for the URL.
 - `release` — `days_ahead`, `release_time`, `timezone`, and retry behavior.
-- `booking` — `date`, ordered `preferred_times`, `players`.
+- `booking` — `date`, ordered `preferred_times`, `players`, and `fallback`.
 - `selectors` — the club-specific CSS selectors.
 - `checkout` — success detection for cart-based portals (see below).
 - `runtime` — headless on/off, screenshots, debug slow-mo.
+
+### Falling back to the closest time
+
+Tee sheets move with sunrise. A 6:30 AM slot that exists all June simply stops
+being published in late August — and an exact-match-only booker would then book
+*nothing*, on precisely the nights the early times shifted.
+
+So when none of `preferred_times` is bookable, the booker takes the bookable
+slot **closest** to what you asked for, with the earlier slot winning a tie.
+In the sunrise case — everything before your time is gone or was never
+published — "closest" is simply the earliest time on the sheet.
+
+```yaml
+booking:
+  preferred_times: ["6:30 AM", "6:40 AM", "6:50 AM"]
+  fallback:
+    enabled: true
+    max_minutes_earlier: 60    # window starts at 5:30 AM (6:30 − 60)
+    max_minutes_later: 120     # window ends at 8:50 AM (6:50 + 120)
+    after_seconds: 0           # consider it as soon as the sheet is up
+    recheck_seconds: 3         # re-scan preferred times once before settling
+```
+
+The bounds are what keep a wiped-out morning from becoming an afternoon round:
+nothing outside the window is ever booked, and a night with nothing in range
+ends with no booking, exactly as before. Tighten `max_minutes_later` if you'd
+rather not play at all than play late; set `enabled: false` for the old
+exact-match-only behavior.
+
+The log and the confirmation say when a fallback was used, e.g.
+`Booked 7:00 AM for 2 players (closest available — 30 min later than preferred)`.
+
+### Watching the sheet drift
+
+Each night's run also records the **earliest tee time the sheet published**,
+bookable or not. That's the number that tells you how far sunrise has pushed
+things:
+
+```bash
+python nightly.py --history      # "1st tee" column, plus first vs. most recent
+```
+
+When that column has moved past your preferred times for a few nights running,
+move `preferred_times` (or `weekly_schedule`) deliberately rather than leaning
+on the fallback every night.
 
 ### Single-click vs. cart-based portals
 

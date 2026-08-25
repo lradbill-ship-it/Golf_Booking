@@ -7,7 +7,9 @@ Run by launchd shortly before midnight. It:
   2. Looks up that weekday's preferred times in config's `weekly_schedule`.
      An empty list means "skip tonight" (e.g. Mondays).
   3. Waits until the exact release instant, then books `players` golfers at the
-     first available preferred time.
+     first available preferred time — or, if none of them is bookable (the tee
+     sheet shifts later as sunrise does), at the closest available time within
+     the `booking.fallback` window.
 
 Flags:
   --plan        Print what it would do (date, weekday, times) and exit. No browser.
@@ -101,6 +103,19 @@ def main(argv=None) -> int:
         f"Play date {play_date} ({weekday_key.title()}); release {release_at.isoformat()}; "
         f"times {times or 'NONE (skip)'}; players {players}."
     )
+    if times:
+        # Apply tonight's times before describing the fallback — the window is
+        # measured from them.
+        cfg.booking.preferred_times = times
+        cfg.booking.players = players
+        window = TeeBooker(cfg, None, log=_stamp).fallback_window()
+        _stamp(
+            f"If none of those is bookable, it books the closest available time "
+            f"in the {window} range."
+            if window
+            else "If none of those is bookable, nothing gets booked "
+                 "(booking.fallback is off)."
+        )
 
     if state_store.is_skipped(play_date) and not args.plan:
         _stamp(f"{play_date} is on the skip list — skipping (per dashboard command).")
@@ -109,10 +124,6 @@ def main(argv=None) -> int:
     if not times:
         _stamp(f"No times configured for {weekday_key.title()} — skipping tonight.")
         return 0
-
-    # Apply tonight's choices to the config the booker reads.
-    cfg.booking.preferred_times = times
-    cfg.booking.players = players
 
     if args.plan:
         return 0
@@ -159,6 +170,7 @@ def main(argv=None) -> int:
             released_at=result.release_detected_at,
             booked=result.success,
             booked_time=result.booked_time,
+            earliest_time=result.earliest_time,
             attempts=result.attempts,
             outcome=result.message,
         )

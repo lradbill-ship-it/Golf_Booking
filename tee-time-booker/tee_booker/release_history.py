@@ -30,6 +30,7 @@ def record(
     booked_time: Optional[str],
     attempts: int,
     outcome: str,
+    earliest_time: Optional[str] = None,
     path: str = HISTORY_FILE,
 ) -> dict:
     """Append one night's outcome and return the record that was written.
@@ -38,6 +39,10 @@ def record(
     cards (None if it never released within the poll window). When both
     timestamps are present, ``seconds_after_nominal`` is how late the release
     was relative to the nominal 00:01.
+
+    ``earliest_time`` is the first tee time the sheet published that night. It
+    drifts later as sunrise does, so tracking it is how you know when to move
+    ``weekly_schedule`` rather than lean on the fallback every night.
     """
     delta = None
     if nominal_release is not None and released_at is not None:
@@ -52,6 +57,7 @@ def record(
         "seconds_after_nominal": delta,
         "booked": bool(booked),
         "booked_time": booked_time,
+        "earliest_time": earliest_time,
         "attempts": int(attempts),
         "outcome": outcome,
     }
@@ -96,10 +102,12 @@ def summarize(path: str = HISTORY_FILE) -> str:
     lines = [
         f"Release history ({len(records)} night(s)) — nominal release is 00:01 ET",
         "",
-        f"{'play date':<12} {'weekday':<10} {'released at':<10} {'vs 00:01':<9} booked",
-        f"{'-'*12} {'-'*10} {'-'*10} {'-'*9} {'-'*6}",
+        f"{'play date':<12} {'weekday':<10} {'released at':<10} {'vs 00:01':<9} "
+        f"{'1st tee':<9} booked",
+        f"{'-'*12} {'-'*10} {'-'*10} {'-'*9} {'-'*9} {'-'*6}",
     ]
     deltas: list[float] = []
+    firsts: list[str] = []   # earliest tee time published, per night
     for r in records:
         released = r.get("released_at")
         released_hm = released[11:19] if released else "never"
@@ -107,9 +115,12 @@ def summarize(path: str = HISTORY_FILE) -> str:
         if delta is not None:
             deltas.append(delta)
         booked = r.get("booked_time") if r.get("booked") else ("yes" if r.get("booked") else "no")
+        earliest = r.get("earliest_time") or "—"
+        if earliest != "—":
+            firsts.append(earliest)
         lines.append(
             f"{r.get('play_date',''):<12} {r.get('weekday',''):<10} "
-            f"{released_hm:<10} {_fmt_delta(delta):<9} {booked or 'no'}"
+            f"{released_hm:<10} {_fmt_delta(delta):<9} {earliest:<9} {booked or 'no'}"
         )
 
     if deltas:
@@ -126,4 +137,13 @@ def summarize(path: str = HISTORY_FILE) -> str:
             lines.append("  (need a few more nights before tightening the poll window)")
     else:
         lines.append("\nNo night has recorded an actual release time yet.")
+
+    if firsts:
+        lines += [
+            "",
+            f"Earliest tee time published: {firsts[0]} on the first recorded night, "
+            f"{firsts[-1]} on the most recent.",
+            "  (this drifts later with sunrise — when it passes your preferred times,"
+            " move weekly_schedule instead of relying on the fallback)",
+        ]
     return "\n".join(lines)

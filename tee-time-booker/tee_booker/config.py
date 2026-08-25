@@ -8,7 +8,7 @@ config.yaml.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date as date_cls, datetime, time as time_cls, timedelta
 from pathlib import Path
 from typing import Optional
@@ -88,10 +88,50 @@ class ReleaseConfig:
 
 
 @dataclass
+class FallbackConfig:
+    """What to do when none of `preferred_times` is bookable.
+
+    Tee sheets shift with sunrise: a 6:30 AM slot that exists in June simply
+    stops being published in August. Without a fallback the booker would find
+    nothing and book nothing on exactly the nights the early times moved. With
+    it, the booker settles for the bookable slot closest to what was asked for
+    (earlier one wins a tie), bounded so it never books a wildly different round.
+    """
+
+    enabled: bool = True
+    # How far either side of the preferred range a fallback slot may sit.
+    # Measured from the earliest/latest preferred time respectively.
+    max_minutes_earlier: int = 60
+    max_minutes_later: int = 120
+    # Don't fall back until this many seconds into the poll window (0 = as soon
+    # as the sheet is up). Raise it to give the preferred times a head start.
+    after_seconds: int = 0
+    # Before settling for a fallback, pause this long and re-scan the preferred
+    # times once — cheap insurance against a half-rendered sheet making a
+    # preferred slot look unavailable for a moment.
+    recheck_seconds: float = 3.0
+
+
+@dataclass
 class BookingConfig:
     date: str = ""
     preferred_times: list[str] = field(default_factory=list)
     players: int = 1
+    fallback: FallbackConfig = field(default_factory=FallbackConfig)
+
+    def __post_init__(self) -> None:
+        # Allow the nested mapping straight from YAML.
+        if isinstance(self.fallback, dict):
+            known = {f.name for f in fields(FallbackConfig)}
+            unknown = set(self.fallback) - known
+            if unknown:
+                raise ConfigError(
+                    "Unknown key(s) under booking.fallback: "
+                    + ", ".join(sorted(unknown))
+                    + ". Valid keys: "
+                    + ", ".join(sorted(known))
+                )
+            self.fallback = FallbackConfig(**self.fallback)
 
     def resolved_date(self, override: Optional[str]) -> date_cls:
         raw = (override or self.date or "").strip()

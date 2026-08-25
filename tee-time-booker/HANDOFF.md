@@ -6,7 +6,41 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-06-27 (Session 2 — cloud review/harden)._
+_Last updated: 2026-08-24 (Session 4 — sunrise fallback)._
+
+---
+
+## 0a. Session 4 (2026-08-24) — book the closest time when 6:30 AM is gone
+
+**Why:** sunrise is sliding later, so PCC's sheet is starting later and the
+6:30 AM slots in `weekly_schedule` will soon stop being published at all. An
+exact-match-only booker books *nothing* on exactly those nights.
+
+**What changed:**
+- `booking.fallback` (new config block, **on by default**). When none of the
+  night's `preferred_times` is bookable, the booker takes the bookable slot
+  **closest** to them — earlier wins a tie — bounded to `max_minutes_earlier`
+  (60) before the first preferred time and `max_minutes_later` (120) after the
+  last. In the sunrise case that is just "the earliest time on the sheet".
+  Outside the window it still books nothing, so a wiped-out morning never turns
+  into an afternoon round.
+- `recheck_seconds` (3s): before settling for second best it pauses and re-scans
+  the preferred times once, so a half-rendered sheet can't cost a good time.
+  `after_seconds` (0) can hold the fallback back to give preferred a head start.
+- **Drift tracking:** every run now records the earliest tee time the sheet
+  published that night. `nightly.py --history` has a new **`1st tee`** column
+  plus a first-vs-most-recent line. **This is the number to watch** — when it
+  passes 6:30 for a few nights, move `weekly_schedule` deliberately.
+- `nightly.py --plan` prints tonight's fallback window.
+- Logs and notifications name the compromise:
+  `Booked 7:00 AM for 2 players (closest available — 30 min later than preferred)`.
+
+**No action needed on the Mac's `config.yaml`** — the fallback defaults to on,
+so it works with the existing file. Add a `booking.fallback:` block only to tune
+the bounds or turn it off. Tests: **142 passing** (was 90).
+
+**Still to watch:** the first night the fallback actually fires. Look for
+`closest available` in `logs/nightly.log`, and confirm the booked time is sane.
 
 ---
 
@@ -29,7 +63,7 @@ Your gitignored local files (`config.yaml`, `.env`, `.dashboard.env`, `.venv/`,
 `logs/`, `state/`, `screenshots/`) are untouched by this — they live only on the
 Mac and aren't in any branch. After the merge, future sessions can just work on
 `main` locally. Then verify: `cd tee-time-booker && .venv/bin/python -m pytest -q`
-(expect 64 passing).
+(expect 142 passing).
 
 ### What Session 2 changed (no behavior change to the nightly race)
 - Removed a leaked-browser path in `booker.run()` (guarded both closes).
@@ -56,7 +90,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **90 tests pass** (`.venv/bin/python -m pytest -q`).
+- **142 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -97,12 +131,12 @@ drifts later.
 | `tee_booker/reservations.py` | List reservations (Kenna JSON API) and **cancel** (detail → Cancel or Modify → form). |
 | `tee_booker/commands.py` | Local rule-based NL command parser (cancel/skip/pause/etc). No API. |
 | `tee_booker/state_store.py` | Kill-switch flag + per-date skip list (`state/`). |
-| `tee_booker/release_history.py` | Append-only log of each night's actual sheet-release time (`state/release_history.jsonl`); `summarize()` powers `nightly.py --history`. |
+| `tee_booker/release_history.py` | Append-only log of each night's actual sheet-release time **and the earliest tee time published** (`state/release_history.jsonl`); `summarize()` powers `nightly.py --history`. |
 | `tee_booker/config.py` | Config dataclasses + validation. |
 | `tee_booker/scheduler.py` | Precise `wait_until` for the release instant. |
 | `tee_booker/notify.py` | Optional webhook notification. |
 | `dashboard.py` | Flask phone dashboard (reservations, cancel, kill switch, NL commands, clubhouse theme). |
-| `tests/` | `test_config.py`, `test_scheduler.py`, `test_commands.py`, `test_booking_safety.py`. |
+| `tests/` | `test_config.py`, `test_scheduler.py`, `test_commands.py`, `test_booking_safety.py`, `test_fallback.py` (closest-time fallback + drift tracking). |
 | `AUTOMATION.md` / `DASHBOARD.md` / `README.md` | Setup + ops docs. |
 
 Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
@@ -118,7 +152,9 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
   point — needs more nights to confirm).
 - **Desired schedule** (`weekly_schedule` in config.yaml): 6:30 AM Tue–Fri,
   7:00/7:10 AM Sat–Sun, **2 golfers**, Mondays skipped. (Times list was widened
-  to include 6:30–7:20 on weekdays for better odds.)
+  to include 6:30–7:20 on weekdays for better odds.) As of Session 4, a night
+  where none of those is bookable falls back to the closest available time
+  rather than booking nothing — see §0a.
 - **Dashboard:** `http://100.122.139.14:8787` (Mac's Tailscale IP). Password in
   `.dashboard.env`. Phone needs Tailscale on; Mac must be awake.
 - **Reservation status codes:** 1 = Confirmed, 0 = Cancelled.
@@ -196,6 +232,11 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
   or pull it in once the window is tightened.
 - **No full-hour / peak load test** of the gentle poll yet — only a 5-min live
   test plus the one real night. Watch the logs for any "Rate-limited" lines.
+- **Sunrise drift (Session 4).** Watch the `1st tee` column in
+  `nightly.py --history`. Once the sheet consistently starts after 6:30 AM,
+  update `weekly_schedule` to the real times — the fallback is a safety net, not
+  a substitute for a correct schedule. Also confirm the first real fallback
+  booking looks right in `logs/nightly.log` (`closest available`).
 - **July 8 was intentionally left unbooked** (user couldn't make it).
 - Dashboard is reachable only while the Mac is awake; user chose "Tailscale
   always-on" on the phone rather than subnet routing.
@@ -204,7 +245,7 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 90 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 142 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night
