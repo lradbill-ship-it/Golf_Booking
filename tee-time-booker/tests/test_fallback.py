@@ -142,19 +142,28 @@ def test_tie_goes_to_the_earlier_slot():
     assert _pick(["7:00 AM"], ["6:40 AM", "7:20 AM"]) == "6:40 AM"
 
 
-def test_distance_is_measured_to_the_nearest_preferred_time():
-    # 7:30 is 10 min from the 7:20 in the list; 6:50 is 20 min from 6:30.
-    assert _pick(["6:30 AM", "7:20 AM"], ["6:50 AM", "7:30 AM"]) == "7:30 AM"
+def test_distance_is_measured_from_the_target_not_the_nearest_listed_time():
+    # Target is 6:30 (first entry). 6:50 is 20 min off it; 7:30 is 60 min off.
+    # Measured against the NEAREST listed time instead, 7:30 would win (10 from
+    # 7:20) — that is precisely what target-anchoring exists to prevent.
+    assert _pick(["6:30 AM", "7:20 AM"], ["6:50 AM", "7:30 AM"]) == "6:50 AM"
 
 
-def test_nothing_close_enough_books_nothing():
-    # Only an afternoon time left, well past the +120 min bound.
-    assert _pick(["6:30 AM"], ["1:00 PM"]) is None
+def test_list_order_chooses_the_target():
+    # Same times, different top choice -> different fallback.
+    assert _pick(["6:30 AM", "6:40 AM", "7:00 AM"], ["6:00 AM", "7:40 AM"]) == "6:00 AM"
+    assert _pick(["7:00 AM", "6:40 AM", "6:30 AM"], ["6:00 AM", "7:40 AM"]) == "7:40 AM"
 
 
-def test_later_bound_is_measured_from_the_last_preferred_time():
-    assert _pick(["6:30 AM", "7:20 AM"], ["9:00 AM"]) == "9:00 AM"     # 7:20 + 100
-    assert _pick(["6:30 AM", "7:20 AM"], ["9:30 AM"]) is None          # 7:20 + 130
+def test_a_late_bound_refuses_anything_past_it():
+    # Only an afternoon time left, well past an explicit +120 min bound.
+    assert _pick(["6:30 AM"], ["1:00 PM"], max_minutes_later=120) is None
+
+
+def test_bounds_are_measured_from_the_target():
+    kw = {"max_minutes_later": 120}
+    assert _pick(["6:30 AM", "7:20 AM"], ["8:30 AM"], **kw) == "8:30 AM"   # 6:30 + 120
+    assert _pick(["6:30 AM", "7:20 AM"], ["8:40 AM"], **kw) is None        # 6:30 + 130
 
 
 def test_earlier_bound_is_respected():
@@ -206,11 +215,18 @@ def test_reported_offset_is_signed_minutes_from_preferred():
 
 
 @pytest.mark.parametrize("offset,expected", [
-    (30, "30 min later than preferred"),
-    (-20, "20 min earlier than preferred"),
-    (0, "at a preferred time"),
+    (30, "30 min later than 6:30 AM"),
+    (-20, "20 min earlier than 6:30 AM"),
+    (0, "exactly 6:30 AM"),
 ])
-def test_describe_offset(offset, expected):
+def test_describe_offset_names_the_target(offset, expected):
+    assert TeeBooker._describe_offset(offset, "6:30 AM") == expected
+
+
+@pytest.mark.parametrize("offset,expected", [
+    (30, "30 min later"), (-20, "20 min earlier"), (0, "on target"),
+])
+def test_describe_offset_without_a_target_label(offset, expected):
     assert TeeBooker._describe_offset(offset) == expected
 
 
@@ -241,9 +257,15 @@ def test_after_seconds_holds_the_fallback_back():
     assert b._consider_fallback(page, set(), elapsed=61)[0] is not None
 
 
-def test_fallback_window_names_the_bounds():
-    b, _ = _booker(["6:30 AM", "7:20 AM"], [])
-    assert b.fallback_window() == "5:30 AM - 9:20 AM"
+@pytest.mark.parametrize("kw,expected", [
+    ({"max_minutes_later": 120}, "5:30 AM - 8:30 AM"),          # both from 6:30
+    ({}, "5:30 AM or later"),                                   # the default
+    ({"max_minutes_earlier": None, "max_minutes_later": 120}, "up to 8:30 AM"),
+    ({"max_minutes_earlier": None}, "any published time"),
+])
+def test_fallback_window_describes_each_combination_of_bounds(kw, expected):
+    b, _ = _booker(["6:30 AM", "7:20 AM"], [], **kw)
+    assert b.fallback_window() == expected
 
 
 @pytest.mark.parametrize("preferred,kw", [
@@ -278,14 +300,15 @@ def test_poll_loop_books_the_fallback_exactly_once():
 
 
 def test_poll_loop_books_nothing_when_no_slot_is_close_enough():
-    b, page = _booker(["6:30 AM"], [_FakeSlot("2:00 PM")], recheck_seconds=0)
+    b, page = _booker(["6:30 AM"], [_FakeSlot("2:00 PM")], recheck_seconds=0,
+                      max_minutes_later=120)
     b._find_available_slot = lambda page, exclude=None: None
     b._slot_count = lambda page: 1
     b._is_blocked = lambda page: False
     b._book_slot = lambda page, slot: pytest.fail("must not book an afternoon time")
     res = b._attempt_booking(page)
     assert res.success is False
-    assert "5:30 AM - 8:30 AM fallback range" in res.message   # says what it looked at
+    assert "fallback range (5:30 AM - 8:30 AM)" in res.message   # says what it looked at
 
 
 # -- config -----------------------------------------------------------------
@@ -377,4 +400,90 @@ def test_end_to_end_sunrise_night_books_the_new_first_tee_time():
     assert booked == ["7:00 AM"]
     assert res.booked_time == "7:00 AM"
     assert res.earliest_time == "6:50 AM"            # how far the sheet has drifted
-    assert "10 min later than preferred" in res.message
+    assert "30 min later than 6:30 AM" in res.message
+
+
+# -- the always-book rule (no cap on how late) ------------------------------
+
+def test_unbounded_late_side_takes_an_afternoon_time_rather_than_nothing():
+    # The standing rule: book *something*. A 2 PM round beats no round.
+    assert _pick(["6:30 AM"], ["2:00 PM"]) == "2:00 PM"
+
+
+def test_unbounded_is_the_default():
+    assert FallbackConfig().max_minutes_later is None
+
+
+def test_unbounded_still_prefers_the_nearest_time():
+    # "No cap" must not become "grab the first thing on the sheet".
+    assert _pick(["7:00 AM"], ["2:00 PM", "8:15 AM", "11:30 AM"]) == "8:15 AM"
+
+
+def test_unbounded_late_side_still_honours_the_early_bound():
+    # Nothing stops the sheet listing a 4 AM slot; 60 min earlier is still the cap.
+    assert _pick(["7:00 AM"], ["4:00 AM", "9:00 PM"]) == "9:00 PM"
+
+
+def test_poll_loop_books_a_far_later_time_under_the_always_book_rule():
+    slots = [_FakeSlot("1:40 PM"), _FakeSlot("3:00 PM")]
+    b, page = _booker(["6:30 AM", "6:40 AM"], slots, recheck_seconds=0)
+    b._find_available_slot = lambda page, exclude=None: None
+    b._slot_count = lambda page: len(slots)
+    b._is_blocked = lambda page: False
+    booked = []
+    b._book_slot = lambda page, slot: (booked.append(b._slot_label_text(slot)), "booked")[1]
+    res = b._attempt_booking(page)
+    assert res.success is True
+    assert booked == ["1:40 PM"]
+    assert "430 min later than 6:30 AM" in res.message
+
+
+@pytest.mark.parametrize("bad", [{"max_minutes_later": -1}, {"max_minutes_earlier": -30}])
+def test_negative_bounds_are_rejected(bad):
+    with pytest.raises(ConfigError):
+        FallbackConfig(**bad)
+
+
+def test_zero_bound_is_allowed_and_means_no_slack():
+    # 0 is a real setting (exact range only), distinct from None (no bound).
+    assert _pick(["6:30 AM"], ["6:31 AM"], max_minutes_later=0) is None
+
+
+# -- the target the fallback orients on -------------------------------------
+
+def test_fallback_target_is_the_first_listed_time():
+    b, _ = _booker(["7:00 AM", "7:10 AM", "6:50 AM"], [])
+    assert b.fallback_target() == (7 * 60, "7:00 AM")
+
+
+def test_fallback_target_skips_unparseable_leading_entries():
+    b, _ = _booker(["whenever", "6:30 AM"], [])
+    assert b.fallback_target() == (390, "6:30 AM")
+
+
+def test_fallback_target_is_none_without_a_parseable_time():
+    b, _ = _booker(["whenever", "dawn"], [])
+    assert b.fallback_target() is None
+
+
+def test_the_two_standing_schedules_orient_differently():
+    """Tue-Thu at 6:30, Fri-Sun at 7:00 — purely from each list's first entry."""
+    weekday = ["6:30 AM", "6:40 AM", "6:50 AM", "7:00 AM", "7:10 AM", "7:20 AM"]
+    weekend = ["7:00 AM", "7:10 AM", "7:20 AM", "7:30 AM", "6:50 AM"]
+
+    bd, _ = _booker(weekday, [])
+    bw, _ = _booker(weekend, [])
+    assert bd.fallback_target()[1] == "6:30 AM"
+    assert bw.fallback_target()[1] == "7:00 AM"
+    assert bd.fallback_window() == "5:30 AM or later"
+    assert bw.fallback_window() == "6:00 AM or later"
+
+    # Same sheet, different day -> different pick, purely from the target.
+    sheet = ["6:35 AM", "7:05 AM"]
+    assert _pick(weekday, sheet) == "6:35 AM"      # 5 min from 6:30
+    assert _pick(weekend, sheet) == "7:05 AM"      # 5 min from 7:00
+
+
+def test_tie_between_earlier_and_later_goes_to_the_earlier_slot():
+    # 6:15 and 7:45 are both 45 min from a 7:00 target; earlier wins.
+    assert _pick(["7:00 AM"], ["6:15 AM", "7:45 AM"], max_minutes_earlier=None) == "6:15 AM"

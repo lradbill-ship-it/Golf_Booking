@@ -56,6 +56,10 @@ booking:
   date: ""
   # Ordered list of acceptable start times. The booker grabs the first one
   # that is available, trying them top to bottom.
+  #
+  # The FIRST entry is also your target: once none of these is bookable, the
+  # fallback below measures "closest" from that time. Put the time you actually
+  # want first.
   preferred_times:
     - "08:00 AM"
     - "08:10 AM"
@@ -71,12 +75,16 @@ booking:
   # case is just "the earliest time on the sheet".
   fallback:
     enabled: true
-    # How far outside your preferred times a fallback may sit. Measured from
-    # the EARLIEST preferred time going back, and the LATEST going forward — so
-    # with 6:30-7:20 preferred, the default window is 5:30 AM - 9:20 AM.
-    # Tighten max_minutes_later if you'd rather not play than play late.
+    # How far from your TARGET (the first entry in preferred_times) a fallback
+    # may sit, going back and going forward respectively.
+    #
+    # max_minutes_later: null is the always-book rule — take the nearest
+    # available time however late it lands, on the view that an afternoon round
+    # beats no round. This is the default. Put a number here instead (e.g. 120)
+    # if you would rather come away with nothing than play hours off target.
+    # Either side accepts null for "no bound"; 0 means no slack at all.
     max_minutes_earlier: 60
-    max_minutes_later: 120
+    max_minutes_later: null
     # Hold the fallback back this many seconds into the polling window, to give
     # your preferred times a head start. 0 = consider it as soon as the sheet
     # is up (recommended: if the time doesn't exist, waiting only loses ground).

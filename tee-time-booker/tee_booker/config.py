@@ -95,14 +95,20 @@ class FallbackConfig:
     stops being published in August. Without a fallback the booker would find
     nothing and book nothing on exactly the nights the early times moved. With
     it, the booker settles for the bookable slot closest to what was asked for
-    (earlier one wins a tie), bounded so it never books a wildly different round.
+    (earlier one wins a tie).
+
+    The bounds below decide whether "closest" is allowed to be a long way off.
+    Set `max_minutes_later: null` for the always-book rule: take the nearest
+    available time however late it is, on the view that a 2 PM round beats no
+    round. Give it a number instead to cap how far it may stray.
     """
 
     enabled: bool = True
-    # How far either side of the preferred range a fallback slot may sit.
-    # Measured from the earliest/latest preferred time respectively.
-    max_minutes_earlier: int = 60
-    max_minutes_later: int = 120
+    # How far either side of the preferred range a fallback slot may sit,
+    # measured from the earliest/latest preferred time respectively.
+    # null = no bound on that side (any time on the sheet qualifies).
+    max_minutes_earlier: Optional[int] = 60
+    max_minutes_later: Optional[int] = None
     # Don't fall back until this many seconds into the poll window (0 = as soon
     # as the sheet is up). Raise it to give the preferred times a head start.
     after_seconds: int = 0
@@ -110,6 +116,15 @@ class FallbackConfig:
     # times once — cheap insurance against a half-rendered sheet making a
     # preferred slot look unavailable for a moment.
     recheck_seconds: float = 3.0
+
+    def __post_init__(self) -> None:
+        for name in ("max_minutes_earlier", "max_minutes_later"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ConfigError(
+                    f"booking.fallback.{name} must be 0 or more, or null for no "
+                    f"bound; got {value}."
+                )
 
 
 @dataclass

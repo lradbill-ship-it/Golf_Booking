@@ -88,7 +88,9 @@ class TeeBooker:
                         found = self._find_fallback_slot(page)
                         if found is not None:
                             slot, _label, offset = found
-                            note = f" (closest available — {self._describe_offset(offset)})"
+                            target = self.fallback_target()
+                            note = (" (closest available — "
+                                    f"{self._describe_offset(offset, target[1] if target else '')})")
                     if slot is None:
                         return BookingResult(
                             False,
@@ -378,7 +380,7 @@ class TeeBooker:
                     message=(
                         f"Nothing bookable within {self.cfg.release.retry_window_seconds}s "
                         f"({attempt} checks) — no preferred time, and "
-                        + (f"nothing in the {window} fallback range either"
+                        + (f"nothing bookable in the fallback range ({window}) either"
                            if (window := self.fallback_window()) else "no fallback is set")
                         + ". The sheet may not have released in time, or everything "
                         "was taken."
@@ -504,21 +506,31 @@ class TeeBooker:
         return None
 
     def fallback_window(self) -> Optional[str]:
-        """The clock range the fallback may search, e.g. "5:30 AM - 9:20 AM".
+        """The clock range the fallback may search, in words.
 
-        None when there is no fallback to describe — it's switched off, or the
-        preferred times have no parseable clock time to measure "closest" from.
-        Used by the nightly `--plan` output as well as the failure message.
+        Reads as "5:30 AM - 9:20 AM" when both sides are bounded, "5:30 AM or
+        later" when only the late side is open, and "any published time" when
+        neither is capped. None when there is no fallback to describe — it's
+        switched off, or the preferred times have no parseable clock time to
+        measure "closest" from. Used by `--plan` and the failure message.
         """
         fb = getattr(self.cfg.booking, "fallback", None)
         if fb is None or not fb.enabled:
             return None
-        wanted = [m for m in (self._parse_time_minutes(t)
-                              for t in self.cfg.booking.preferred_times) if m is not None]
-        if not wanted:
+        target = self.fallback_target()
+        if target is None:
             return None
-        lo, hi = min(wanted) - fb.max_minutes_earlier, max(wanted) + fb.max_minutes_later
-        return f"{self._fmt_minutes(lo)} - {self._fmt_minutes(hi)}"
+        lo = (None if fb.max_minutes_earlier is None
+              else self._fmt_minutes(target[0] - fb.max_minutes_earlier))
+        hi = (None if fb.max_minutes_later is None
+              else self._fmt_minutes(target[0] + fb.max_minutes_later))
+        if lo and hi:
+            return f"{lo} - {hi}"
+        if lo:
+            return f"{lo} or later"
+        if hi:
+            return f"up to {hi}"
+        return "any published time"
 
     @staticmethod
     def _fmt_minutes(minutes: int) -> str:
@@ -556,33 +568,55 @@ class TeeBooker:
             if found is None:
                 return None, ""
         _slot, _label, offset = found
-        return _slot, f" (closest available — {self._describe_offset(offset)})"
+        target = self.fallback_target()
+        note = self._describe_offset(offset, target[1] if target else "")
+        return _slot, f" (closest available — {note})"
+
+    def fallback_target(self):
+        """The one time the fallback orients on, as (minutes, label).
+
+        It is the FIRST entry in `preferred_times` — the day's top choice.
+        Everything below it in the list is a ranked second best to try while
+        exact matching is still possible; once that is exhausted, "closest"
+        means closest to this single target, not to whichever listed time
+        happens to sit nearest. So a 6:30 AM weekday and a 7:00 AM weekend
+        orient differently just by how each day's list is ordered.
+
+        None when no entry carries a parseable clock time.
+        """
+        for raw in self.cfg.booking.preferred_times:
+            minutes = self._parse_time_minutes(raw)
+            if minutes is not None:
+                return minutes, self._fmt_minutes(minutes)
+        return None
 
     def _find_fallback_slot(self, page, exclude=None):
-        """The bookable slot closest to the preferred times, when none is free.
+        """The bookable slot closest to the target time, when none is free.
 
         Tee sheets drift with sunrise — a 6:30 AM time that existed in June is
         simply not published in late August — so an exact-match-only booker
         books nothing on precisely the nights the early times moved. This ranks
-        every bookable slot by how far it sits from the nearest preferred time
-        and takes the closest, with the EARLIER slot winning a tie. When the
-        sheet now starts after the desired time (the sunrise case), that is just
-        "the earliest time available".
+        every bookable slot by how far it sits from `fallback_target()` and
+        takes the closest, with the EARLIER slot winning a tie. When the sheet
+        now starts after the target (the sunrise case), that is just "the
+        earliest time available".
 
-        Candidates are bounded to `max_minutes_earlier` before the first
-        preferred time and `max_minutes_later` after the last, so a wiped-out
-        morning never turns into an afternoon round. Returns (slot, label,
-        minutes_from_preferred) or None.
+        Candidates are bounded to `max_minutes_earlier` before the target and
+        `max_minutes_later` after it; either bound may be None, meaning that
+        side is unbounded and any published time qualifies. Returns
+        (slot, label, minutes_from_target) or None.
         """
         fb = getattr(self.cfg.booking, "fallback", None)
         if fb is None or not fb.enabled:
             return None
-        wanted = [m for m in (self._parse_time_minutes(t)
-                              for t in self.cfg.booking.preferred_times) if m is not None]
-        if not wanted:
+        target = self.fallback_target()
+        if target is None:
             return None  # nothing to measure "closest" against
-        earliest_ok = min(wanted) - fb.max_minutes_earlier
-        latest_ok = max(wanted) + fb.max_minutes_later
+        target_minutes = target[0]
+        earliest_ok = (None if fb.max_minutes_earlier is None
+                       else target_minutes - fb.max_minutes_earlier)
+        latest_ok = (None if fb.max_minutes_later is None
+                     else target_minutes + fb.max_minutes_later)
 
         exclude = exclude or set()
         s = self.cfg.selectors
@@ -592,17 +626,21 @@ class TeeBooker:
             slot = slots.nth(i)
             label = self._slot_label_text(slot)
             minutes = self._parse_time_minutes(label)
-            if minutes is None or not (earliest_ok <= minutes <= latest_ok):
+            if minutes is None:
+                continue
+            if earliest_ok is not None and minutes < earliest_ok:
+                continue
+            if latest_ok is not None and minutes > latest_ok:
                 continue
             if self._normalize(label) in exclude:
                 continue  # already lost this one at checkout
             if slot.locator(s["book_button"]).count() == 0 or not self._slot_allows_players(slot):
                 continue
-            nearest = min(wanted, key=lambda w: (abs(minutes - w), w))
-            # Sort by distance, then by clock time: the earlier slot wins a tie.
-            key = (abs(minutes - nearest), minutes)
+            # Sort by distance from the target, then by clock time: the
+            # earlier slot wins a tie.
+            key = (abs(minutes - target_minutes), minutes)
             if best is None or key < best[0]:
-                best = (key, i, label, minutes - nearest)
+                best = (key, i, label, minutes - target_minutes)
         if best is None:
             return None
         return slots.nth(best[1]), best[2], best[3]
@@ -631,11 +669,12 @@ class TeeBooker:
         return None
 
     @staticmethod
-    def _describe_offset(minutes: int) -> str:
-        """'20 min later' / '10 min earlier' / 'exactly on time'."""
+    def _describe_offset(minutes: int, target_label: str = "") -> str:
+        """How far a fallback sits from the target, e.g. '40 min later than 7:00 AM'."""
+        against = f" than {target_label}" if target_label else ""
         if minutes == 0:
-            return "at a preferred time"
-        return f"{abs(minutes)} min {'later' if minutes > 0 else 'earlier'} than preferred"
+            return f"exactly {target_label}" if target_label else "on target"
+        return f"{abs(minutes)} min {'later' if minutes > 0 else 'earlier'}{against}"
 
     def _slot_allows_players(self, slot) -> bool:
         """Whether this slot's allowed party size includes booking.players."""

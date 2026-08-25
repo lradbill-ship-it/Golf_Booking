@@ -86,29 +86,43 @@ being published in late August — and an exact-match-only booker would then boo
 *nothing*, on precisely the nights the early times shifted.
 
 So when none of `preferred_times` is bookable, the booker takes the bookable
-slot **closest** to what you asked for, with the earlier slot winning a tie.
-In the sunrise case — everything before your time is gone or was never
-published — "closest" is simply the earliest time on the sheet.
+slot **closest to your target**, with the earlier slot winning a tie. In the
+sunrise case — everything before your time is gone or was never published —
+"closest" is simply the earliest time on the sheet.
+
+**The target is the first entry in `preferred_times`.** The rest of the list is
+a ranked set of second bests, tried in order while exact matching is still
+possible; once they are exhausted, distance is measured from that one target
+rather than from whichever listed time happens to sit nearest. So a list
+starting `6:30 AM` and a list starting `7:00 AM` behave differently on the same
+tee sheet, and each weekday in `weekly_schedule` gets its own target for free —
+just put that day's real target first.
 
 ```yaml
 booking:
   preferred_times: ["6:30 AM", "6:40 AM", "6:50 AM"]
   fallback:
     enabled: true
-    max_minutes_earlier: 60    # window starts at 5:30 AM (6:30 − 60)
-    max_minutes_later: 120     # window ends at 8:50 AM (6:50 + 120)
+    max_minutes_earlier: 60    # window starts at 5:30 AM (target 6:30 − 60)
+    max_minutes_later: null    # no cap on the late side — always book something
     after_seconds: 0           # consider it as soon as the sheet is up
     recheck_seconds: 3         # re-scan preferred times once before settling
 ```
 
-The bounds are what keep a wiped-out morning from becoming an afternoon round:
-nothing outside the window is ever booked, and a night with nothing in range
-ends with no booking, exactly as before. Tighten `max_minutes_later` if you'd
-rather not play at all than play late; set `enabled: false` for the old
-exact-match-only behavior.
+`max_minutes_later: null` is the **always-book rule**, and the default:
+whatever happens to the morning, the booker comes away with the nearest
+available time, even if that is hours later — an afternoon round beats no
+round. Set a number instead (`120`, say) if you would rather end the night
+unbooked than play far off target; then nothing outside the window is booked
+and a night with nothing in range ends empty. `0` means no slack at all on
+that side, and `enabled: false` restores exact-match-only behavior.
 
-The log and the confirmation say when a fallback was used, e.g.
-`Booked 7:00 AM for 2 players (closest available — 30 min later than preferred)`.
+"Nearest" is unaffected by the bounds: with a 7:00 AM target and 8:15 AM,
+11:30 AM and 2:00 PM open, it books 8:15 AM. No cap never means "grab the
+first thing on the sheet".
+
+The log and confirmation name the target, so a compromise is always legible:
+`Booked 7:40 AM for 2 players (closest available — 40 min later than 7:00 AM)`.
 
 ### Watching the sheet drift
 

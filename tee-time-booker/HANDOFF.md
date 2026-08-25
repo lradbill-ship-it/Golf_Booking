@@ -6,7 +6,49 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-08-24 (Session 4 — sunrise fallback)._
+_Last updated: 2026-08-25 (Session 4 — sunrise fallback + always-book rule)._
+
+---
+
+## 0b. The standing rule (set by the user, 2026-08-25)
+
+> **You have to book a tee time.** If the desired time isn't open, take the next
+> closest time — **even if it is hours later.**
+
+Encoded as `booking.fallback.max_minutes_later: null` (no cap on the late side),
+which is now the default. Do not reintroduce a late-side cap without the user
+saying so. The early side stays capped at 60 min, since a slot earlier than the
+sheet's first tee time doesn't occur in practice.
+
+**"Closest" is measured from a single target, not from the whole list.** The
+target is the FIRST entry in that day's `preferred_times`. The user chose this
+explicitly over measuring to the nearest listed time: they want it to orient on
+the time they actually want and work outward from there. Targets:
+
+| Days | Target | List |
+|---|---|---|
+| Tue, Wed, Thu | **6:30 AM** | 6:30, 6:40, 6:50, 7:00, 7:10, 7:20 |
+| Fri, Sat, Sun | **7:00 AM** | 7:00, 7:10, 7:20, 7:30, 6:50 |
+| Mon | — | skipped |
+
+Friday moved from the weekday group to the weekend group in this session — the
+data showed it landing 7:10 three weeks running, so 6:30 was never its real
+target. Because the target is just the list's first element, changing a day's
+orientation means reordering that day's list; there is no separate setting.
+`nightly.py --plan` prints the target it would use tonight.
+
+**Why it mattered:** 47 nights of history showed **Sundays had never booked —
+0 for 8** since July 12, and Sat Sep 5 became the first Saturday miss. The
+weekend list was only `7:00 AM` + `7:10 AM`; the Sep 6 run watched **46 bookable
+cards** for an hour and took none of them. Weekdays are drifting too — Fridays
+landed 7:10 three weeks running (Aug 21/28, Sep 4), one step from falling off a
+list that ends at 7:20.
+
+Fri/Sat/Sun `weekly_schedule` was widened at the same time to
+`["7:00 AM", "7:10 AM", "7:20 AM", "7:30 AM", "6:50 AM"]` — that list controls
+*preference order* near the target; the fallback handles everything past it.
+Note 6:50 sits last (least preferred) but does not affect the target, which is
+the first element.
 
 ---
 
@@ -20,10 +62,10 @@ exact-match-only booker books *nothing* on exactly those nights.
 - `booking.fallback` (new config block, **on by default**). When none of the
   night's `preferred_times` is bookable, the booker takes the bookable slot
   **closest** to them — earlier wins a tie — bounded to `max_minutes_earlier`
-  (60) before the first preferred time and `max_minutes_later` (120) after the
-  last. In the sunrise case that is just "the earliest time on the sheet".
-  Outside the window it still books nothing, so a wiped-out morning never turns
-  into an afternoon round.
+  (60) before the first preferred time and `max_minutes_later` after the last.
+  In the sunrise case that is just "the earliest time on the sheet". Either
+  bound accepts `null` for "no bound"; the late side ships as `null` per the
+  standing rule in §0b.
 - `recheck_seconds` (3s): before settling for second best it pauses and re-scans
   the preferred times once, so a half-rendered sheet can't cost a good time.
   `after_seconds` (0) can hold the fallback back to give preferred a head start.
@@ -37,7 +79,7 @@ exact-match-only booker books *nothing* on exactly those nights.
 
 **No action needed on the Mac's `config.yaml`** — the fallback defaults to on,
 so it works with the existing file. Add a `booking.fallback:` block only to tune
-the bounds or turn it off. Tests: **142 passing** (was 90).
+the bounds or turn it off. Tests: **162 passing** (was 90).
 
 **Still to watch:** the first night the fallback actually fires. Look for
 `closest available` in `logs/nightly.log`, and confirm the booked time is sane.
@@ -63,7 +105,7 @@ Your gitignored local files (`config.yaml`, `.env`, `.dashboard.env`, `.venv/`,
 `logs/`, `state/`, `screenshots/`) are untouched by this — they live only on the
 Mac and aren't in any branch. After the merge, future sessions can just work on
 `main` locally. Then verify: `cd tee-time-booker && .venv/bin/python -m pytest -q`
-(expect 142 passing).
+(expect 162 passing).
 
 ### What Session 2 changed (no behavior change to the nightly race)
 - Removed a leaked-browser path in `booker.run()` (guarded both closes).
@@ -90,7 +132,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **142 tests pass** (`.venv/bin/python -m pytest -q`).
+- **162 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -245,7 +287,7 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 142 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 162 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night
