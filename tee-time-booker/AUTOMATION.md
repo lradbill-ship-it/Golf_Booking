@@ -59,11 +59,46 @@ Each run books **at most one** tee time:
 To book more than one day, that's what the weekly schedule is for: one booking
 per night for each upcoming play date. (Covered by `test_booking_safety.py`.)
 
+## Earlier-time watcher (optional, read-only)
+
+`watch_earlier.py` re-checks dates where the nightly booker had to settle for a
+late time (e.g. **Tuesdays at 9:40 AM** — PCC's Tuesday sheet is empty from the
+first tee until 9:40 at release) and flags an **earlier** time on the dashboard's
+*Earlier-time watch* card if one opens. It **never books or cancels** — moving
+to the better time is yours to do (book it on the portal, then cancel the later
+one from the dashboard).
+
+- Only watches tee times the nightly booker booked (matched against
+  `state/release_history.jsonl`), later than that day's target, on a scheduled,
+  un-skipped day. `python watch_earlier.py --plan` lists every reservation and
+  why it is or isn't watched.
+- Refuses to run between **23:30 and 01:30** (`earlier_watch.quiet_start/end`)
+  so it can never log in during the midnight race, and honours the dashboard's
+  kill switch.
+- History: `state/earlier_watch.jsonl`; `python watch_earlier.py --history`.
+- The dashboard card warns if no check has run for over a day.
+
+**Scheduling it** (not installed by default):
+
+```bash
+cp launchd/com.laneradbill.teebooker.watch.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.laneradbill.teebooker.watch.plist
+tail -f logs/watch.log
+# remove:
+launchctl unload -w ~/Library/LaunchAgents/com.laneradbill.teebooker.watch.plist
+```
+
+It runs at 7:10, 11:10, 15:10 and 19:10; a time the Mac slept through runs on the
+next wake.
+
 ## Requirements / caveats
 
 - **Stay logged in** (screen may be **locked**, but don't fully log out) — a
-  LaunchAgent only runs in an active user session. Headless Chromium doesn't
-  need the screen unlocked.
+  LaunchAgent only runs in an active user session. **The browser now runs
+  VISIBLE (`runtime.headless: false`)**, because since 2026-09-23 the portal
+  stalls a headless browser forever at the final purchase step. A visible window
+  needs a real GUI login session; if a night ever fails to open one, that is the
+  first thing to check.
 - **Keep it plugged into AC** — scheduled wake is reliable on power; on battery
   it may not wake.
 - **Prefer Sleep over Shutdown** at night. If the disk uses FileVault and the

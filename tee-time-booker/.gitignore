@@ -2,6 +2,8 @@
 .env
 .dashboard.env
 config.yaml
+config.yaml.bak
+*.bak
 
 # Python
 __pycache__/

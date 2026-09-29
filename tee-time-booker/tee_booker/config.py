@@ -161,6 +161,61 @@ class BookingConfig:
 
 
 @dataclass
+class WatchConfig:
+    """Settings for `watch_earlier.py`, the read-only earlier-time watcher.
+
+    Some mornings are gone within seconds of release (on Tuesdays PCC's sheet is
+    empty from the first tee until 9:40 AM), so the always-book fallback lands
+    hours late. The watcher re-checks those dates during the day and flags a
+    better time if one opens. It never books or cancels.
+    """
+
+    # Only flag a real gain: the open time must be at least this many minutes
+    # closer to the day's target than the one held. Slots are 10 minutes apart,
+    # so 10 = "any better slot".
+    min_improvement_minutes: int = 10
+    # Don't bother watching a date sooner than this many days away.
+    min_days_ahead: int = 1
+    # Local clock window when watch_earlier.py refuses to run, so it never logs
+    # in alongside the midnight race (launchd replays a missed job on wake, and
+    # the Mac wakes at 23:55). Wraps past midnight when start > end.
+    quiet_start: str = "23:30"
+    quiet_end: str = "01:30"
+
+    def __post_init__(self) -> None:
+        if self.min_improvement_minutes is None or self.min_improvement_minutes < 1:
+            raise ConfigError(
+                "earlier_watch.min_improvement_minutes must be 1 or more; "
+                f"got {self.min_improvement_minutes}."
+            )
+        if self.min_days_ahead is None or self.min_days_ahead < 0:
+            raise ConfigError(
+                f"earlier_watch.min_days_ahead must be 0 or more; got {self.min_days_ahead}."
+            )
+        for name in ("quiet_start", "quiet_end"):
+            try:
+                datetime.strptime(str(getattr(self, name)), "%H:%M")
+            except ValueError as exc:
+                raise ConfigError(
+                    f"earlier_watch.{name} must be HH:MM (24-hour); got {getattr(self, name)!r}."
+                ) from exc
+
+    @classmethod
+    def from_raw(cls, raw) -> "WatchConfig":
+        raw = raw or {}
+        if not isinstance(raw, dict):
+            raise ConfigError("earlier_watch: must be a mapping of settings.")
+        known = {f.name for f in fields(cls)}
+        unknown = set(raw) - known
+        if unknown:
+            raise ConfigError(
+                "Unknown key(s) under earlier_watch: " + ", ".join(sorted(unknown))
+                + ". Valid keys: " + ", ".join(sorted(known))
+            )
+        return cls(**raw)
+
+
+@dataclass
 class ClubConfig:
     login_url: str = ""
     tee_sheet_url: str = ""
@@ -170,6 +225,11 @@ class ClubConfig:
 @dataclass
 class RuntimeConfig:
     headless: bool = True
+    # Drop images/fonts/media + analytics to keep the long poll gentle on the
+    # rate limiter. Turn OFF to drive the portal the way a real browser does —
+    # the checkout hang of 2026-09-23.. is only reproducible with automation,
+    # and a resource the checkout waits on is a prime suspect.
+    block_resources: bool = True
     screenshot_on_error: bool = True
     screenshot_dir: str = "screenshots"
     slow_mo_ms: int = 0
@@ -187,6 +247,7 @@ class Config:
     # portals that book in a single confirm click.
     checkout: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
+    earlier_watch: WatchConfig = field(default_factory=WatchConfig)
 
     @classmethod
     def load(cls, path: str = "config.yaml") -> "Config":
@@ -205,6 +266,7 @@ class Config:
         selectors = data.get("selectors") or {}
         date_picker = data.get("date_picker") or {}
         checkout = data.get("checkout") or {}
+        earlier_watch = WatchConfig.from_raw(data.get("earlier_watch"))
 
         cfg = cls(
             club=club,
@@ -215,6 +277,7 @@ class Config:
             runtime=runtime,
             checkout=checkout,
             raw=data,
+            earlier_watch=earlier_watch,
         )
         cfg.validate()
         return cfg

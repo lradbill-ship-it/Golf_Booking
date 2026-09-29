@@ -93,6 +93,24 @@ booking:
     # preferred times once — cheap insurance against a half-rendered sheet.
     recheck_seconds: 3
 
+# Earlier-time watcher (watch_earlier.py) — READ-ONLY, never books or cancels.
+# Some mornings are gone within seconds of release (PCC's Tuesday sheet is empty
+# from the first tee until 9:40 AM), so the nightly fallback lands hours late.
+# The watcher re-checks those dates during the day and flags an EARLIER time on
+# the dashboard if one opens. It only watches times the nightly booker booked
+# (not ones you booked by hand) that sit later than that day's target.
+# Every key is optional; these are the defaults.
+earlier_watch:
+  # Flag only a real gain: the open time must be at least this many minutes
+  # closer to the day's target. Slots are 10 min apart, so 10 = any better slot.
+  min_improvement_minutes: 10
+  # Don't watch dates sooner than this many days away.
+  min_days_ahead: 1
+  # Never run in this local-time window, so it can't log in during the midnight
+  # race. Wraps past midnight.
+  quiet_start: "23:30"
+  quiet_end: "01:30"
+
 # CSS selectors for your club's portal. Replace the placeholders.
 selectors:
   username: "#username"
@@ -160,6 +178,11 @@ checkout:
   # this substring (the portal navigates to a confirmation page on success).
   success_when_url_leaves: "/checkout"
   success_timeout_seconds: 20
+  # If the portal says it is STILL PROCESSING a submitted purchase, keep waiting
+  # this long instead of walking away at success_timeout_seconds. From
+  # 2026-09-23 every night died at 20s with "Processing cart items ( 0 of 1 )"
+  # still on screen, booking nothing for six nights running.
+  processing_timeout_seconds: 180
 
 # Optional date picker config — only needed if tee_sheet_url has no {date}.
 date_picker:
@@ -168,7 +191,11 @@ date_picker:
   day_cell: ""        # a day cell; {day} is substituted with the day number
 
 runtime:
-  headless: true            # set false to watch it work while testing
+  # KEEP THIS false. Since 2026-09-23 the PCC portal stalls a HEADLESS browser
+  # forever at the final purchase ("Processing cart items ( 0 of 1 )") — six
+  # nights in a row booked nothing. A visible browser books in ~4s. A visible
+  # window needs an active GUI login session (a locked screen is fine).
+  headless: false
   screenshot_on_error: true
   screenshot_dir: "screenshots"
   # Slow down actions by N ms (helpful while debugging selectors).

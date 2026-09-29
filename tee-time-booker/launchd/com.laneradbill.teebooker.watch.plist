@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.laneradbill.teebooker.watch</string>
+
+    <!-- READ-ONLY earlier-time watcher (watch_earlier.py): re-checks tee sheets
+         for dates the nightly booker had to settle for, and flags an earlier
+         time on the dashboard. Never books or cancels. caffeinate -i keeps the
+         Mac from idle-sleeping mid-check (~1 min). If the Mac is asleep at a
+         scheduled time, launchd runs the job on the next wake; a wake inside
+         earlier_watch.quiet_start..quiet_end (23:30-01:30, the midnight race)
+         makes the script exit without logging in. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/.venv/bin/python</string>
+        <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/watch_earlier.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>10</integer></dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/logs/watch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/logs/watch.log</string>
+</dict>
+</plist>

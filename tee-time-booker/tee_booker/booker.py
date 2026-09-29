@@ -120,6 +120,79 @@ class TeeBooker:
                 except Exception:  # noqa: BLE001
                     pass
 
+    def scan_for_earlier(self, helds, *, min_improvement: int):
+        """Look at each held date's sheet for a better time. READ-ONLY.
+
+        One browser session for the whole check. For every date: open its
+        sheet, record the earliest time open to our party, and rank the bookable
+        slots against that day's target with the same ranking the nightly
+        fallback uses (`_closest_slot`). Never clicks Book, never touches the
+        cart. Returns an `earlier_watch.WatchRun`.
+        """
+        from playwright.sync_api import sync_playwright  # lazy import
+
+        from .earlier_watch import WatchRun
+
+        run = WatchRun()
+        rt = self.cfg.runtime
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=rt.headless, slow_mo=rt.slow_mo_ms or 0)
+            context = browser.new_context()
+            context.route("**/*", self._maybe_block)
+            page = context.new_page()
+            try:
+                self._login_resiliently(page)
+                self._scan_for_earlier_on(page, helds, run, min_improvement=min_improvement)
+            except Exception as exc:  # noqa: BLE001
+                run.error = str(exc)
+            finally:
+                try:
+                    context.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    browser.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return run
+
+    def _scan_for_earlier_on(self, page, helds, run, *, min_improvement: int) -> None:
+        """The per-date scan behind `scan_for_earlier` (browser-free to test)."""
+        from .earlier_watch import WatchScan, improvement
+
+        fb = getattr(self.cfg.booking, "fallback", None)
+        back = 60 if fb is None else fb.max_minutes_earlier
+        for held in helds:
+            self.cfg.booking.players = held.players
+            self._open_tee_sheet(page, held.play_date)
+            if self._is_blocked(page):
+                run.blocked = True
+                self.log("Rate-limited (Cloudflare) — ending this check; the next run retries.")
+                return
+            earliest = self._earliest_bookable(page)
+            earliest_ok = None if back is None else held.target_minutes - back
+            # Strictly earlier than the held time: this watches for EARLIER tee
+            # times, never a move later (even one nearer the target).
+            found = self._closest_slot(page, held.target_minutes, earliest_ok,
+                                       held.held_minutes - 1)
+            label = minutes = None
+            gain = 0
+            if found is not None:
+                _slot, label, offset = found
+                minutes = held.target_minutes + offset
+                gain = improvement(held, minutes)
+            better = gain >= min_improvement
+            run.scans.append(WatchScan(
+                held=held, earliest_open=earliest,
+                better_time=label if better else None,
+                better_minutes=minutes if better else None,
+                improvement=gain if better else 0,
+            ))
+            head = (f"{held.play_date} ({held.weekday.title()}): holding {held.held_label}, "
+                    f"target {held.target_label}; earliest open {earliest or 'nothing'}")
+            self.log(f"{head} — " + (f"BETTER TIME OPEN: {label} ({gain} min closer)."
+                                     if better else "nothing better."))
+
     # -- steps -----------------------------------------------------------------
 
     def _login(self, page) -> None:
@@ -328,16 +401,48 @@ class TeeBooker:
                         attempts=attempt,
                     )
                 if status == "stop":
+                    # The click is not the record. Screenshot first (verifying
+                    # navigates away), then ask the portal's own reservation
+                    # list what actually happened.
+                    shot = self._screenshot(page, "unconfirmed")
+                    verdict = (self._booked_on_portal(page, play_date, label)
+                               if play_date is not None else None)
+                    if verdict is True:
+                        self.log(f"The reservation list shows {label} — it went through after all.")
+                        return BookingResult(
+                            True,
+                            booked_time=label,
+                            message=(
+                                f"Booked {label} for {self.cfg.booking.players} players "
+                                "(slow checkout — confirmed on the reservation list)."
+                            ),
+                            screenshot=shot,
+                            release_detected_at=released_at,
+                            attempts=attempt,
+                        )
+                    if verdict is False:
+                        # A point-in-time read. It rules a purchase IN with
+                        # certainty; ruling one OUT assumes the portal writes the
+                        # reservation before we look. No delayed write has been
+                        # observed — but the hung checkouts of 2026-09-23..29 left
+                        # one order with no reservation behind, so say what was
+                        # seen and when, and let a human settle an odd case.
+                        detail = (f"The reservation list showed no booking for {play_date} "
+                                  "when checked seconds later, so almost certainly nothing "
+                                  "was bought.")
+                    else:
+                        detail = ("Couldn't read the reservation list to check, so it is "
+                                  "unknown whether anything was bought — check the portal.")
+                    self.log(detail)
                     return BookingResult(
                         False,
                         booked_time=label,
                         message=(
-                            f"Attempted to book {label} but couldn't confirm it "
-                            "(or the cart held extra items). Stopping WITHOUT "
-                            "retrying to avoid a possible double booking — please "
-                            "check the portal."
+                            f"Attempted to book {label} but the portal never confirmed it. "
+                            + detail
+                            + " Stopping WITHOUT retrying, to rule out a double booking."
                         ),
-                        screenshot=self._screenshot(page, "unconfirmed"),
+                        screenshot=shot,
                         release_detected_at=released_at,
                         attempts=attempt,
                     )
@@ -435,6 +540,8 @@ class TeeBooker:
 
     def _maybe_block(self, route):
         try:
+            if not getattr(self.cfg.runtime, "block_resources", True):
+                return route.continue_()
             req = route.request
             if req.resource_type in ("image", "media", "font") or any(
                 h in req.url for h in self._BLOCK_HOSTS
@@ -472,6 +579,72 @@ class TeeBooker:
         "issue finishing your booking",
         "please select another time",
     )
+
+    # Shown while the portal completes a SUBMITTED purchase ("Processing cart
+    # items ( 0 of 1 ) ..."). A POSITIVE signal that the click landed and work is
+    # in flight, so waiting longer is right — unlike silence, which proves nothing.
+    _PROCESSING_MARKERS = (
+        "processing cart items",
+        "processing your order",
+        "completing your booking",
+    )
+
+    def _is_processing(self, page) -> bool:
+        """True while the portal says it is still completing the purchase."""
+        try:
+            text = (page.inner_text("body") or "").lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return any(m in text for m in self._PROCESSING_MARKERS)
+
+    def _booked_on_portal(self, page, play_date, label):
+        """Does the portal's OWN reservation list show this tee time?
+
+        True / False / None, where None means we could not read the list — which
+        is NOT the same as "no booking", and must never be treated as one. Used
+        after an unconfirmed checkout: a click that we could not confirm is not
+        evidence either way, but the member's reservation list is.
+        """
+        from .reservations import _parse
+        from .session import origin_of
+
+        minutes = self._parse_time_minutes(label or "")
+        captured: dict = {}
+
+        def on_response(resp):
+            u = resp.url
+            if ("kenna.io" in u and "/reservation/history" in u
+                    and "playDateMin" in u and resp.request.method == "GET"):
+                try:
+                    captured["data"] = resp.json()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        page.on("response", on_response)
+        try:
+            page.goto(f"{origin_of(self.cfg.club.login_url)}/reservation/history",
+                      wait_until="domcontentloaded")
+            for _ in range(40):
+                if "data" in captured:
+                    break
+                page.wait_for_timeout(300)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Couldn't open the reservation list to verify ({exc}).")
+            return None
+        finally:
+            try:
+                page.remove_listener("response", on_response)
+            except Exception:  # noqa: BLE001
+                pass
+        if "data" not in captured:
+            return None
+        for r in _parse(captured["data"]):
+            when = r.when
+            if r.cancelled or when is None or when.date() != play_date:
+                continue
+            if minutes is None or when.hour * 60 + when.minute == minutes:
+                return True
+        return False
 
     def _inventory_unavailable(self, page) -> bool:
         """True when the portal rejected the purchase because the slot was taken."""
@@ -617,7 +790,18 @@ class TeeBooker:
                        else target_minutes - fb.max_minutes_earlier)
         latest_ok = (None if fb.max_minutes_later is None
                      else target_minutes + fb.max_minutes_later)
+        return self._closest_slot(page, target_minutes, earliest_ok, latest_ok, exclude)
 
+    def _closest_slot(self, page, target_minutes, earliest_ok=None, latest_ok=None,
+                      exclude=None):
+        """The bookable, party-size-fitting slot closest to `target_minutes`.
+
+        The one ranking both the nightly fallback and the upgrade watcher use:
+        distance from the target, with the EARLIER slot winning a tie. Slots
+        outside [earliest_ok, latest_ok] (either may be None = unbounded) or in
+        `exclude` are passed over. Returns (slot, label, minutes_from_target)
+        or None.
+        """
         exclude = exclude or set()
         s = self.cfg.selectors
         slots = page.locator(s["time_slot"])
@@ -644,6 +828,31 @@ class TeeBooker:
         if best is None:
             return None
         return slots.nth(best[1]), best[2], best[3]
+
+    def _earliest_bookable(self, page) -> Optional[str]:
+        """Label of the earliest slot our party could book right now, or None.
+
+        Unlike `_earliest_slot` (every published time, bookable or not), this is
+        what is actually open to us — the number that shows whether a blocked
+        morning has started giving times back.
+        """
+        s = self.cfg.selectors
+        best = None
+        try:
+            slots = page.locator(s["time_slot"])
+            for i in range(slots.count()):
+                slot = slots.nth(i)
+                label = self._slot_label_text(slot)
+                minutes = self._parse_time_minutes(label)
+                if minutes is None:
+                    continue
+                if slot.locator(s["book_button"]).count() == 0 or not self._slot_allows_players(slot):
+                    continue
+                if best is None or minutes < best[0]:
+                    best = (minutes, label)
+        except Exception:  # noqa: BLE001
+            return None  # observational only
+        return best[1] if best else None
 
     @staticmethod
     def _parse_time_minutes(text: str) -> Optional[int]:
@@ -869,8 +1078,19 @@ class TeeBooker:
         """
         leaves = (self.cfg.checkout or {}).get("success_when_url_leaves", "/checkout")
         timeout_s = float((self.cfg.checkout or {}).get("success_timeout_seconds", 20))
+        patience_s = float((self.cfg.checkout or {}).get("processing_timeout_seconds", 180))
         deadline = time.monotonic() + timeout_s
+        started = time.monotonic()
+        extended = False
         while True:
+            # The portal telling us it is still working is a reason to wait, not
+            # to walk away: from 2026-09-23 every night died here at 20s with
+            # "Processing cart items ( 0 of 1 )" still on screen.
+            if attempted_purchase and not extended and self._is_processing(page):
+                extended = True
+                deadline = max(deadline, time.monotonic() + patience_s)
+                self.log(f"Portal says it is still processing the purchase — "
+                         f"waiting up to {patience_s:.0f}s more for it to finish.")
             try:
                 if leaves not in page.url:
                     return "booked"
@@ -880,6 +1100,9 @@ class TeeBooker:
                 self.log("Portal rejected the purchase: that time was just taken.")
                 return "taken"
             if time.monotonic() >= deadline:
+                if extended:
+                    self.log(f"Still not confirmed after {time.monotonic() - started:.0f}s "
+                             "of processing.")
                 return "stop" if attempted_purchase else "retry"
             page.wait_for_timeout(500)
 

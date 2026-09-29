@@ -6,7 +6,111 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-08-25 (Session 4 — sunrise fallback + always-book rule)._
+_Last updated: 2026-09-29 (Session 6 — SIX NIGHTS BOOKED NOTHING: the portal now
+blocks headless browsers at checkout; fixed by `runtime.headless: false`)._
+
+> **If the booker stops booking, check `runtime.headless` first** — see gotcha #9.
+
+---
+
+## 0c. Session 5 (2026-09-15/16) — what's released, the Tuesday block, the watcher
+
+**Numbering:** the user opened this as "session 4"; the repo's Session 4 is the
+Aug 24–25 fallback work below. This is **Session 5**. Trust the repo's count.
+
+### Measured findings (read these before changing the schedule)
+
+1. **First tee = sunrise rounded UP to the next :10.** Fits all 7 checked play
+   dates (offset +1..+10 min after sunrise at Pennsauken, never before):
+
+   | Play dates | First tee published |
+   |---|---|
+   | Sep 9–13 | 6:40 AM |
+   | Sep 15–24 | 6:50 AM |
+   | Sep 25–29 | 7:00 AM |
+
+   Projection: **7:10 ≈ Oct 6, 7:20 ≈ Oct 20, 7:30 ≈ Oct 27, back to 6:40 on
+   Nov 3** (DST ends Nov 1). It moves every day of the week together — nothing
+   is Tue–Fri specific.
+2. **Published ≠ gettable.** `release_history.earliest_time` is the earliest
+   card seen that night (at release = earliest published). The live sheet only
+   renders UNSOLD slots — sold ones vanish — so a daytime look shows what's
+   LEFT, never what was published. Don't use a daytime scrape to measure drift.
+3. **The Tuesday block.** Play dates Tue Sep 22 and Tue Sep 29 each lost **17 and
+   16 consecutive checkouts** ("no longer available"), walking 6:50/7:00 → 9:30
+   one slot per ~50s, and booked **9:40 AM** after ~35 min / 64 checks. Same
+   boundary both weeks; and Wed Sep 23 (released one day later) still had 7:00
+   open six days on. A standing Tuesday-morning block (league/outing), not a race
+   lost by milliseconds — polling faster won't beat it. It began when the first
+   tee passed 6:50: Tue Sep 8 booked 6:40; Sep 15 booked nothing; Sep 22/29 = 9:40.
+   "Taken at checkout" over 12 nights each: **Tue 36**, Sun 24, Fri 15, Sat 10,
+   Wed 4, Thu 4.
+4. **The user cancelled Tue Sep 22 9:40** (status 0). **Tue Sep 29 9:40** and
+   **Sun Sep 27 7:40** are held (as of 2026-09-16).
+5. **`NOTIFY_WEBHOOK_URL` is blank** in `.env` — every `notify()` goes only to the
+   log. The dashboard is the only place a result reaches the user.
+6. **pmset repeating sleep is still 01:00**, not the 01:15 §3/§7 recommend. The
+   last two Tuesday races ended at 00:35 — 25 min of margin.
+
+### What shipped
+
+- **`watch_earlier.py` + `tee_booker/earlier_watch.py` — READ-ONLY earlier-time
+  watcher.** Re-checks dates the nightly booker settled for and flags an EARLIER
+  2-golfer time. Never books, cancels, or touches the cart (a test fake fails if
+  Book or the cart is touched). Watches a reservation only if: sole confirmed one
+  that date; booked by the automation (exact date+time in release_history); a
+  scheduled, un-skipped day; the configured party size; cancellable; ≥
+  `min_days_ahead`; later than the target by ≥ `min_improvement_minutes`; later
+  than that sheet's published first tee. `--plan` explains every reservation.
+  Refuses to run 23:30–01:30 (`quiet_start/end`) — launchd replays a missed job
+  on wake and the Mac wakes at 23:55. Lock file prevents overlap. Announces each
+  opening once. History `state/earlier_watch.jsonl`, `--history`.
+- **Dashboard "Earlier-time watch" card** (live; dashboard restarted 2026-09-16):
+  per watched date "holding X · earliest open Y", a highlighted banner when an
+  earlier time is open, and a warning if no check has run in >26h.
+- `TeeBooker._closest_slot` — the fallback's ranking extracted so the nightly
+  fallback and the watcher share ONE implementation; `_earliest_bookable`.
+- `earlier_watch:` config block (all optional); `launchd/com.laneradbill.teebooker.watch.plist`
+  (7:10/11:10/15:10/19:10) — **written, NOT installed.**
+- Tests **214** (was 162). The 8 safety rules were mutation-tested: each
+  deliberate break was caught by the test named for it.
+- Verified live: `--plan` and a full scan against the portal (4 of 4 dates:
+  Wed 23 earliest open 8:50, Thu 24 7:40, Sun 27 11:10, Tue 29 9:40 — our own slot).
+
+### Blocked — auto-upgrade (book the earlier time, cancel the later one)
+
+The user said "we should continue to try to get earlier tee times". Writing an
+unattended book-then-cancel script was **denied by the auto-mode safety
+classifier (Real-World Transactions)** — it needs the user's explicit OK, and was
+NOT worked around. If approved, the design (already reasoned through):
+
+1. At most ONE purchase attempt per run; set status "stop" BEFORE clicking so an
+   exception mid-checkout reads "may have bought — verify", never "nothing".
+2. **Book the new time FIRST; never cancel first** (cancel-first can lose both).
+3. Verify the new reservation on the Kenna reservation list (retry ~4×10s) —
+   a URL change / banner is not proof. Not found ⇒ flag, don't cancel.
+4. Cancel the old via `reservations.cancel_reservation`.
+5. Verify with POSITIVE evidence (old listed Cancelled AND new Confirmed). An
+   empty read is NOT success. Otherwise flag "holding both" on the dashboard.
+6. **Unknown that decides whether book-first is even possible:** does PCC let a
+   member hold two tee times on the same day? Settle it with one supervised live
+   attempt before arming anything.
+
+### Open decisions (the user's)
+
+1. Install the watcher's launchd job? (read-only; logs in ~4×/day)
+2. Authorize the auto-upgrade above?
+3. `sudo pmset repeat wakeorpoweron MTWRFSU 23:55:00 sleep MTWRFSU 01:15:00`
+   (needs admin — the user runs it).
+4. Retarget `weekly_schedule`: Tue–Thu still target 6:30, which hasn't been
+   published since before Sep 9. Bookings still land right (the fallback takes
+   the earliest), but logs read "190 min later than 6:30". Options: auto-follow
+   the sunrise rule, or edit by hand monthly.
+5. Tuesday strategy if the watcher never sees the block release: skip Tuesdays,
+   target ~9:40, or ask the pro shop what the block is and whether it clears.
+6. A date whose fallback the user CANCELLED (Sep 22) is not watched. Should an
+   early slot opening there be flagged too?
+7. Set `NOTIFY_WEBHOOK_URL` so openings reach the phone without opening the dashboard.
 
 ---
 
@@ -105,7 +209,7 @@ Your gitignored local files (`config.yaml`, `.env`, `.dashboard.env`, `.venv/`,
 `logs/`, `state/`, `screenshots/`) are untouched by this — they live only on the
 Mac and aren't in any branch. After the merge, future sessions can just work on
 `main` locally. Then verify: `cd tee-time-booker && .venv/bin/python -m pytest -q`
-(expect 162 passing).
+(expect 214 passing).
 
 ### What Session 2 changed (no behavior change to the nightly race)
 - Removed a leaked-browser path in `booker.run()` (guarded both closes).
@@ -132,7 +236,7 @@ watch/cancel reservations and control the automation.
   **Sat Jul 11, 7:00 AM, 2 players** (the first fully successful unattended run).
 - **Dashboard: live** via launchd, reachable over Tailscale.
 - **Cancel + per-player cancel: working** (fixed and validated).
-- **162 tests pass** (`.venv/bin/python -m pytest -q`).
+- **214 tests pass** (`.venv/bin/python -m pytest -q`).
 
 ### The big lesson from the first successful night
 PCC's nominal release is "12:01 AM" but the sheet **actually released ~12:14
@@ -177,8 +281,11 @@ drifts later.
 | `tee_booker/config.py` | Config dataclasses + validation. |
 | `tee_booker/scheduler.py` | Precise `wait_until` for the release instant. |
 | `tee_booker/notify.py` | Optional webhook notification. |
-| `dashboard.py` | Flask phone dashboard (reservations, cancel, kill switch, NL commands, clubhouse theme). |
-| `tests/` | `test_config.py`, `test_scheduler.py`, `test_commands.py`, `test_booking_safety.py`, `test_fallback.py` (closest-time fallback + drift tracking). |
+| `watch_earlier.py` | READ-ONLY earlier-time watcher (Session 5): flags an earlier time on dates the nightly booker settled for. `--plan`, `--history`. |
+| `tee_booker/earlier_watch.py` | The watcher's pure rules: which reservations to watch, quiet window, history, lock. |
+| `launchd/com.laneradbill.teebooker.watch.plist` | Watcher schedule (4×/day) — not installed by default. |
+| `dashboard.py` | Flask phone dashboard (reservations, cancel, kill switch, NL commands, earlier-time watch card, clubhouse theme). |
+| `tests/` | `test_config.py`, `test_scheduler.py`, `test_commands.py`, `test_booking_safety.py`, `test_fallback.py` (closest-time fallback + drift tracking), `test_earlier_watch.py` (watcher rules, read-only scan, runner). |
 | `AUTOMATION.md` / `DASHBOARD.md` / `README.md` | Setup + ops docs. |
 
 Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
@@ -247,6 +354,17 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    releases, so a brief blip no longer loses the night. If the Mac's Wi-Fi drops
    nightly, address that at the OS level too.
 
+9. **THE PORTAL BLOCKS HEADLESS BROWSERS AT CHECKOUT (from 2026-09-23).** Six
+   consecutive nights (play dates Oct 7-13) booked NOTHING: the race was won,
+   the slot found, the purchase submitted — then the page sat on "Processing
+   cart items ( 0 of 1 )" forever and the run gave up. Proven 2026-09-29 by A/B
+   on the SAME date and slot: headless hung 180s and bought nothing; a visible
+   browser booked it in 4 seconds. Ruled out first: sleep (the Mac woke every
+   night and ran), the cart (empty), price/rate (all $0.00), resource blocking
+   (same hang with `block_resources: false`), and the Session-5 refactor (four
+   nights booked fine after it). **`runtime.headless` must stay `false`.** The
+   member's own browser was never affected — the user booked by hand throughout.
+
 ## 7. Open items / next steps
 
 - **Checkout-race recovery — cart-clear selectors captured & bug fixed (Session
@@ -287,10 +405,12 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
 
 ```bash
 cd ~/Golf_Booking/tee-time-booker
-.venv/bin/python -m pytest -q                 # tests (expect 162 passing)
+.venv/bin/python -m pytest -q                 # tests (expect 214 passing)
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night
+.venv/bin/python watch_earlier.py --plan        # which tee times the earlier-time watcher would watch
+.venv/bin/python watch_earlier.py --history     # earliest open time per watched date
 .venv/bin/python nightly.py --date 2026-07-12 --no-wait --dry-run  # safe dry run
 
 # Manual booking / inspection (CLI):

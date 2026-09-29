@@ -27,7 +27,7 @@ from flask import (
     Flask, flash, redirect, render_template_string, request, session, url_for,
 )
 
-from tee_booker import state_store
+from tee_booker import earlier_watch, state_store
 from tee_booker.commands import parse_command
 from tee_booker.config import Config, Credentials
 from tee_booker.reservations import cancel_reservation, fetch_reservations
@@ -86,6 +86,44 @@ def _tail_log(n: int = 40) -> str:
         return "(no nightly log yet)"
 
 
+def _minutes_between(scan) -> int:
+    """How much earlier the open time is than the held one, in clock minutes."""
+    from tee_booker.booker import TeeBooker
+    held = TeeBooker._parse_time_minutes(scan.get("held_time") or "")
+    better = TeeBooker._parse_time_minutes(scan.get("better_time") or "")
+    return held - better if held is not None and better is not None else 0
+
+
+WATCH_STALE_HOURS = 26  # scheduled several times a day; a day+ of silence means it stopped
+
+
+def _earlier_watch():
+    """What the earlier-time watcher last saw, shaped for the home page."""
+    run, scans = earlier_watch.latest_run(earlier_watch.load())
+    if run is None:
+        return None
+    try:
+        when = _dt.datetime.fromisoformat(run["recorded_at"])
+        age_h = (_dt.datetime.now(when.tzinfo) - when).total_seconds() / 3600
+        checked = when.strftime("%a %-I:%M %p")
+    except (KeyError, ValueError):
+        age_h, checked = None, "unknown"
+    today = _dt.date.today().isoformat()
+    rows = [
+        dict(date=_pretty(r["play_date"]), held=r.get("held_time"),
+             earliest=r.get("earliest_open") or "nothing",
+             better=r.get("better_time"), earlier_by=_minutes_between(r))
+        for r in scans if r.get("play_date", "") >= today
+    ]
+    return dict(
+        checked=checked, summary=run.get("summary", ""), rows=rows,
+        problem=("rate-limited — the next run retries" if run.get("blocked")
+                 else run.get("error")),
+        stale=age_h is not None and age_h > WATCH_STALE_HOURS,
+        openings=sum(1 for r in rows if r["better"]),
+    )
+
+
 def _pretty(iso_date: str) -> str:
     try:
         return _dt.date.fromisoformat(iso_date).strftime("%a, %b %-d")
@@ -132,6 +170,7 @@ def home():
         skips=[(d, _pretty(d)) for d in state_store.load_skip_dates()],
         updated=time.strftime("%-I:%M %p", time.localtime(_cache["ts"])) if _cache["ts"] else "never",
         log=_tail_log(),
+        watch=_earlier_watch(),
     )
 
 
@@ -340,6 +379,11 @@ BASE_CSS = """
   .status-on { color:#1b5b3a; } .status-off { color:#8a3330; }
   .big { font-size:1.15rem; font-weight:600; }
   .muted { color:#8a7f63; font-size:.78rem; }
+  .opening { background:#fff3cf; border-color:#c7a957; }
+  .watchrow { display:flex; justify-content:space-between; gap:10px; padding:7px 0;
+              border-top:1px solid #ece2c6; font-size:.9rem; }
+  .watchrow:first-of-type { border-top:0; }
+  .watchrow .open { color:#1b5b3a; font-weight:700; }
 
   details { margin-top:8px; } summary { cursor:pointer; color:#7a6a3f; font-size:.8rem;
           letter-spacing:.16em; text-transform:uppercase; font-weight:700; }
@@ -427,6 +471,29 @@ HOME_HTML = ("""
         </form>
       {% endfor %}
     </div>
+  </div>
+  {% endif %}
+
+  <h2 class=section>Earlier-time watch</h2>
+  {% if not watch %}
+  <div class=card><div class=meta>No checks yet. The watcher looks for earlier times on dates
+    the auto-booker had to settle for (e.g. Tuesdays at 9:40).</div></div>
+  {% else %}
+  <div class="card {{ 'opening' if watch.openings else '' }}">
+    {% if watch.openings %}
+    <div class=big>⛳ Earlier time open</div>
+    <div class=meta>Book it on the portal, then cancel the later one below. The watcher never books or cancels.</div>
+    {% endif %}
+    {% for r in watch.rows %}
+    <div class=watchrow>
+      <div>{{ r.date }} <span class=muted>· holding {{ r.held }}</span></div>
+      {% if r.better %}<div class=open>{{ r.better }} open · {{ r.earlier_by }} min earlier</div>
+      {% else %}<div class=muted>earliest open {{ r.earliest }}</div>{% endif %}
+    </div>
+    {% endfor %}
+    {% if not watch.rows %}<div class=meta>{{ watch.summary }}</div>{% endif %}
+    <div class=muted style="margin-top:8px">Checked {{ watch.checked }}{% if watch.problem %} · {{ watch.problem }}{% endif %}</div>
+    {% if watch.stale %}<div class=flash>The last check was over a day ago — the watcher may have stopped.</div>{% endif %}
   </div>
   {% endif %}
 

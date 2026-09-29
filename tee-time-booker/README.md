@@ -138,6 +138,25 @@ When that column has moved past your preferred times for a few nights running,
 move `preferred_times` (or `weekly_schedule`) deliberately rather than leaning
 on the fallback every night.
 
+### Watching for an earlier time
+
+The always-book fallback takes the closest time it can get **at release**. Some
+mornings are gone at that instant — at PCC the Tuesday sheet is empty from the
+first tee until 9:40 AM — so it can land hours from the target. Blocks like that
+may give times back before play, so `watch_earlier.py` re-checks those dates and
+flags an earlier time on the dashboard when one opens:
+
+```bash
+python watch_earlier.py --plan       # which reservations it would watch, and why not the rest
+python watch_earlier.py              # one read-only check (logs in, opens those sheets)
+python watch_earlier.py --history    # earliest open time per watched date, as it changed
+```
+
+It is **read-only**: it never books, cancels, or touches the cart. It watches only
+tee times the nightly booker booked that sit later than the day's target — never
+one you booked by hand — and only ever flags an *earlier* time. Settings live
+under `earlier_watch:` (see `config.example.yaml`).
+
 ### Single-click vs. cart-based portals
 
 Some portals book in one confirm click; set `confirm_button` and
@@ -169,5 +188,6 @@ pip install pytest
 pytest -q
 ```
 
-The tests cover config/credential handling and the release-time math
-(including EST↔EDT), and don't require a browser.
+The tests cover config/credential handling, the release-time math (including
+EST↔EDT), the booking safety guarantees, the closest-time fallback, and the
+earlier-time watcher — and don't require a browser.
