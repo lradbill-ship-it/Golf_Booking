@@ -16,6 +16,18 @@ import pytest
 
 from tee_booker.booker import BookingResult, TeeBooker
 
+
+class _Loc:
+    def __init__(self, items):
+        self._items = list(items)
+
+    def count(self):
+        return len(self._items)
+
+    @property
+    def first(self):
+        return self._items[0]
+
 PROCESSING = "Processing cart items ( 0 of 1 ) ..."
 PLAY_DATE = date(2026, 10, 13)
 
@@ -37,6 +49,9 @@ class _CheckoutPage:
 
     def goto(self, *a, **k):
         pass
+
+    def locator(self, _sel):            # the sheet's date header, matching PLAY_DATE
+        return _Loc([SimpleNamespace(inner_text=lambda: "Oct 13, 2026")])
 
     def on(self, *a, **k):
         pass
@@ -154,6 +169,7 @@ def _run_booker(verdict):
     b.cfg = SimpleNamespace(
         release=SimpleNamespace(retry_window_seconds=0.5, retry_interval_seconds=0.001),
         booking=SimpleNamespace(players=2),
+        selectors={"sheet_date_label": ".sheet-date"},
     )
     b.log = lambda *a, **k: None
     b.book_calls = 0

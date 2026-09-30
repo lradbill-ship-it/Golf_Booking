@@ -44,6 +44,19 @@ This machine is set up to book tee times automatically at the 12:01 AM release.
   margin. If you change that window, push the sleep time out to match.
   Verify with `pmset -g sched`. Clear with `sudo pmset repeat cancel`.
 
+## Safety — it can only book the day it was asked for
+
+Every poll cycle compares the tee sheet's own date header
+(`selectors.sheet_date_label`) with the requested play date, and `_book_slot`
+checks again at the click. A sheet showing a different day — or one whose date
+cannot be read — is ignored entirely and reopened. This exists because on
+2026-09-30 a failed reopen left the browser on the portal's default (same-day)
+sheet and the race bought **the wrong day** while reporting the right one.
+
+If the club is **closed** on the play date, the sheet publishes no times at all;
+the run reports exactly that and books nothing — on that day or any other. That
+is deliberately different from "the times I wanted were taken".
+
 ## Safety — one booking per run
 
 Each run books **at most one** tee time:

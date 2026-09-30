@@ -6,8 +6,9 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-09-29 (Session 6 — SIX NIGHTS BOOKED NOTHING: the portal now
-blocks headless browsers at checkout; fixed by `runtime.headless: false`)._
+_Last updated: 2026-09-30 (Session 6 — the headless checkout block, then a
+WRONG-DAY booking: the booker bought a tee time for the current day while
+reporting the play date. Both fixed.)_
 
 > **If the booker stops booking, check `runtime.headless` first** — see gotcha #9.
 
@@ -364,6 +365,26 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    (same hang with `block_resources: false`), and the Session-5 refactor (four
    nights booked fine after it). **`runtime.headless` must stay `false`.** The
    member's own browser was never affected — the user booked by hand throughout.
+
+10. **NEVER TRUST THE PAGE TO BE THE DAY YOU ASKED FOR (2026-09-30).** The run
+   for play date 2026-10-14 — a day the course is CLOSED — reopened the sheet,
+   the reopen died mid-flight, `_reopen` swallowed the error, and the browser
+   was left on the portal's DEFAULT sheet (that night's own day, 63 cards). The
+   race read those as Oct 14's, bought **12:40 PM on 2026-09-30**, and logged
+   "Booked 12:40 PM for 2026-10-14". The order receipt was the only place the
+   real date appeared; the reservation list could not show it either, because a
+   same-day booking drops off once the time passes.
+   Fixes: `selectors.sheet_date_label` is read every cycle and compared with the
+   requested play date — a sheet that is the wrong day (or whose date cannot be
+   read) contributes NOTHING: not "released", not `earliest_time`, not a
+   bookable slot — and `_book_slot` refuses at the click as a second layer. An
+   unconfigured `sheet_date_label` keeps the old behaviour rather than refusing
+   everything. `_reopen` now logs its failures.
+   **A closed day is now its own outcome:** zero tee times all night on a
+   POSITIVELY-read sheet for the right day reports "No tee times were published
+   for <date> at all ... likely closed ... nothing was booked on any other day",
+   distinct from "times were published, so they were taken". `_slot_count`
+   returning -1 means COULDN'T COUNT and is never called a closure.
 
 ## 7. Open items / next steps
 

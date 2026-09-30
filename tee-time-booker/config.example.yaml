@@ -123,6 +123,11 @@ selectors:
 
   # On the tee sheet, the row/cell representing a bookable slot. The booker
   # finds the one whose visible text contains a preferred time.
+  # The sheet's OWN date header. Checked against the requested play date before
+  # any booking: on 2026-09-30 a failed reopen left the browser on the portal's
+  # default (that day's) sheet and the race bought the WRONG DAY. Unreadable or
+  # mismatched = no booking.
+  sheet_date_label: "[data-testid=\"teetimes-header-date\"]"
   time_slot: ".teetime-slot, [data-time]"
   # The element that holds the slot's time text (relative to time_slot, or a
   # global selector). Used to match against preferred_times.

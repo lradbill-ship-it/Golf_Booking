@@ -329,6 +329,9 @@ class TeeBooker:
           "retry"  — failed *before* any purchase, so nothing was booked; safe
                      to try again (e.g. the next preferred time).
         """
+        self._expected_play_date = play_date
+        saw_slots = False       # did the RIGHT day's sheet ever publish a tee time?
+        confirmed_empty = False  # ...and did we ever POSITIVELY read it as empty?
         start = time.monotonic()
         deadline = start + self.cfg.release.retry_window_seconds
         interval = self.cfg.release.retry_interval_seconds
@@ -363,8 +366,25 @@ class TeeBooker:
                 self._login(page)
                 self._open_tee_sheet(page, play_date, allow_relogin=False)
 
-            cards = self._slot_count(page)
+            cards = self._slot_count(page)   # -1 means COULDN'T COUNT, not zero
+            # Before this sheet counts as anything — released, earliest-seen, or
+            # bookable — confirm it is the day we asked for.
+            checking = self._sheet_date_check_on()
+            on_date = self._sheet_date_matches(page, play_date) if checking else None
+            if cards == 0 and on_date is True:
+                confirmed_empty = True  # the right day, positively read, with no times
+            if cards > 0 and play_date is not None and checking:
+                if on_date is not True:
+                    self.log(
+                        f"[{elapsed:.0f}s] The sheet on screen is NOT {play_date} "
+                        + ("(its date could not be read)" if on_date is None
+                           else "(it shows a different day)")
+                        + " — reopening. Nothing will be booked from this page."
+                    )
+                    self._reopen(page, play_date)
+                    cards = 0  # this page tells us nothing about play_date
             if cards > 0:
+                saw_slots = True
                 self._earliest_seen = self._earliest_slot(page, self._earliest_seen)
             # First time the fresh sheet shows any cards = the actual release.
             if released_at is None and cards > 0:
@@ -480,6 +500,24 @@ class TeeBooker:
                 )
 
             if time.monotonic() >= deadline:
+                if not saw_slots and confirmed_empty:
+                    # Zero tee times all night on the right day's sheet. That is a
+                    # CLOSED COURSE (or an unreleased sheet), not "my times were
+                    # taken" — and there is nothing to fall back to. Booking any
+                    # other day would be wrong; say so plainly instead.
+                    return BookingResult(
+                        False,
+                        message=(
+                            f"No tee times were published for {play_date} at all "
+                            f"({attempt} checks over "
+                            f"{self.cfg.release.retry_window_seconds}s). The course is "
+                            "likely closed that day, or the sheet never released. "
+                            "Nothing was booked, and nothing was booked on any other day."
+                        ),
+                        screenshot=self._screenshot(page, "no_sheet"),
+                        release_detected_at=released_at,
+                        attempts=attempt,
+                    )
                 return BookingResult(
                     False,
                     message=(
@@ -487,8 +525,7 @@ class TeeBooker:
                         f"({attempt} checks) — no preferred time, and "
                         + (f"nothing bookable in the fallback range ({window}) either"
                            if (window := self.fallback_window()) else "no fallback is set")
-                        + ". The sheet may not have released in time, or everything "
-                        "was taken."
+                        + ". Tee times WERE published for this day, so they were taken."
                     ),
                     screenshot=self._screenshot(page, "no_slot"),
                     release_detected_at=released_at,
@@ -528,8 +565,9 @@ class TeeBooker:
                 self._open_tee_sheet(page, play_date)
             else:
                 page.reload(wait_until="domcontentloaded")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Couldn't reopen the tee sheet ({exc}) — the page may now be "
+                     "showing something else; it will be re-checked before any booking.")
 
     # Trackers and heavy media we never need — blocking them cuts the request
     # count per reload (gentler on the rate limiter, faster reloads).
@@ -829,6 +867,57 @@ class TeeBooker:
             return None
         return slots.nth(best[1]), best[2], best[3]
 
+    def _sheet_date_matches(self, page, play_date):
+        """Does the tee sheet ON SCREEN belong to `play_date`?
+
+        True / False / None, where None means the date could not be read. Only
+        True ever permits a booking: on 2026-09-30 a reopen died mid-flight, the
+        browser was left on the portal's DEFAULT sheet (that day's), and the race
+        bought a 12:40 PM tee time for THAT day while reporting it as the play
+        date 14 days out. The page is not evidence of which day it shows unless
+        we read the date off it.
+        """
+        sel = (getattr(self.cfg, "selectors", None) or {}).get("sheet_date_label")
+        if not sel or play_date is None:
+            return None
+        try:
+            loc = page.locator(sel)
+            if loc.count() == 0:
+                return None
+            shown = self._parse_sheet_date(loc.first.inner_text() or "")
+        except Exception:  # noqa: BLE001
+            return None
+        return None if shown is None else shown == play_date
+
+    def _sheet_date_check_on(self) -> bool:
+        """Is date verification configured? Unconfigured must not mean "refuse".
+
+        A portal without `sheet_date_label` set keeps the old behaviour rather
+        than refusing every booking — the guard is strict only where it can
+        actually look.
+        """
+        return bool((getattr(self.cfg, "selectors", None) or {}).get("sheet_date_label"))
+
+    @staticmethod
+    def _parse_sheet_date(text):
+        """'Oct 14, 2026' -> date(2026, 10, 14). None if it isn't a date."""
+        raw = " ".join((text or "").split())
+        for fmt in ("%b %d, %Y", "%B %d, %Y", "%a, %b %d, %Y", "%A, %B %d, %Y",
+                    "%b %d %Y", "%B %d %Y", "%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw, fmt).date()
+            except ValueError:
+                continue
+        m = re.search(r"([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})", raw)
+        if m:
+            for fmt in ("%b %d %Y", "%B %d %Y"):
+                try:
+                    return datetime.strptime(f"{m.group(1)[:3]} {m.group(2)} {m.group(3)}",
+                                             "%b %d %Y").date()
+                except ValueError:
+                    continue
+        return None
+
     def _earliest_bookable(self, page) -> Optional[str]:
         """Label of the earliest slot our party could book right now, or None.
 
@@ -937,6 +1026,14 @@ class TeeBooker:
     def _book_slot(self, page, slot) -> str:
         """Book one slot. Returns "booked", "stop", or "retry" (see _attempt_booking)."""
         s = self.cfg.selectors
+        # Last line of defence, at the click itself: never buy off a sheet we
+        # cannot confirm is the requested day (2026-09-30 bought the wrong day).
+        expected = getattr(self, "_expected_play_date", None)
+        if (expected is not None and self._sheet_date_check_on()
+                and self._sheet_date_matches(page, expected) is not True):
+            self.log(f"REFUSING to book: cannot confirm this sheet is {expected}. "
+                     "Nothing was bought.")
+            return "retry"
         # Open this slot's booking panel / detail. A failure here means nothing
         # was purchased (e.g. the slot was just taken), so it's safe to retry.
         try:
