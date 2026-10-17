@@ -98,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-wait", action="store_true", help="Skip waiting for release.")
     p.add_argument("--history", action="store_true",
                    help="Print the recorded release-time history and exit.")
+    p.add_argument("--reservations", action="store_true",
+                   help="Print the portal's own reservation list and exit (read-only).")
     return p
 
 
@@ -106,6 +108,26 @@ def main(argv=None) -> int:
 
     if args.history:
         print(release_history.summarize())
+        return 0
+
+    if args.reservations:
+        # The portal's own record — the only thing that proves what was booked.
+        # A supported command so checks never need an ad-hoc `python -c`.
+        try:
+            cfg = Config.load(args.config)
+            creds = Credentials.from_env(args.env)
+        except ConfigError as exc:
+            _stamp(f"Configuration problem: {exc}")
+            return 2
+        from tee_booker.reservations import fetch_reservations
+
+        rows = fetch_reservations(cfg, creds, log=lambda _m: None)
+        if not rows:
+            print("No upcoming reservations found (or the portal read failed).")
+            return 1
+        print(f"{'date':<20} {'time':<10} {'status':<10} players")
+        for r in rows:
+            print(f"{r.date_label:<20} {r.time_label:<10} {r.status:<10} {r.players}")
         return 0
 
     if state_store.is_paused() and not args.plan:
