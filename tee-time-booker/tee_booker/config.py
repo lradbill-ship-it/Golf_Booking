@@ -53,7 +53,7 @@ class ReleaseConfig:
     timezone: str = "America/New_York"
     warmup_seconds: int = 30
     # Log in this many seconds BEFORE the release so authentication happens
-    # before the 12:01 traffic surge (logging in at the peak was failing).
+    # before the release traffic surge (logging in at the peak was failing).
     prelogin_seconds: int = 60
     retry_window_seconds: int = 90
     # Seconds between retries. Keep this gentle — reloading too fast trips the
@@ -177,10 +177,12 @@ class WatchConfig:
     # Don't bother watching a date sooner than this many days away.
     min_days_ahead: int = 1
     # Local clock window when watch_earlier.py refuses to run, so it never logs
-    # in alongside the midnight race (launchd replays a missed job on wake, and
-    # the Mac wakes at 23:55). Wraps past midnight when start > end.
-    quiet_start: str = "23:30"
-    quiet_end: str = "01:30"
+    # in alongside the booking race. MUST track release.release_time: PCC moved
+    # the release from 00:01 to 09:00 in Oct 2026, so this moved from
+    # 23:30-01:30 to 08:30-10:15 (the job fires 08:55 and may poll an hour).
+    # Wraps past midnight when start > end.
+    quiet_start: str = "08:30"
+    quiet_end: str = "10:15"
 
     def __post_init__(self) -> None:
         if self.min_improvement_minutes is None or self.min_improvement_minutes < 1:
@@ -283,6 +285,10 @@ class Config:
         return cfg
 
     def validate(self) -> None:
+        # Fail at LOAD on a bad release time: a release time that cannot be read
+        # would otherwise be guessed at, and guessing it mistargets the play date
+        # by a day (PCC moved 00:01 -> 09:00 in Oct 2026).
+        self.release._parsed_release_time()
         if not self.club.login_url or "example.com" in self.club.login_url:
             raise ConfigError(
                 "club.login_url is still the placeholder. Set it to your club's real login page."

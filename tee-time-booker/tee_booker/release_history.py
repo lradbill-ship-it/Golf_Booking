@@ -1,7 +1,8 @@
 """Append-only log of when the tee sheet *actually* releases each night.
 
-PCC's nominal release is 00:01 ET, but it has been observed to release ~13
-minutes later. This module records one JSON object per line in
+PCC's nominal release is whatever `release.release_time` says (00:01 until Oct
+2026, 09:00 after the club moved it), and the sheet has been observed to appear
+~13 minutes later than nominal. This module records one JSON object per line in
 ``state/release_history.jsonl`` so the real release time can be learned over
 several nights — once it's consistent, the polling window can be tightened
 (see HANDOFF.md §7). Pure stdlib; safe to import without Playwright.
@@ -99,12 +100,22 @@ def summarize(path: str = HISTORY_FILE) -> str:
     if not records:
         return "No release history recorded yet."
 
+    # The nominal release is a CLUB SETTING that changes (PCC moved 00:01 -> 09:00
+    # in Oct 2026). Read it off the most recent record instead of hardcoding it,
+    # so the table never mislabels what a delta is measured against.
+    nominal = "—"
+    for r in reversed(records):
+        try:
+            nominal = datetime.fromisoformat(r["nominal_release"]).strftime("%H:%M")
+            break
+        except (KeyError, TypeError, ValueError):
+            continue
     lines = [
-        f"Release history ({len(records)} night(s)) — nominal release is 00:01 ET",
+        f"Release history ({len(records)} night(s)) — latest nominal release is {nominal} ET",
         "",
-        f"{'play date':<12} {'weekday':<10} {'released at':<10} {'vs 00:01':<9} "
+        f"{'play date':<12} {'weekday':<10} {'released at':<10} {'vs nominal':<10} "
         f"{'1st tee':<9} booked",
-        f"{'-'*12} {'-'*10} {'-'*10} {'-'*9} {'-'*9} {'-'*6}",
+        f"{'-'*12} {'-'*10} {'-'*10} {'-'*10} {'-'*9} {'-'*6}",
     ]
     deltas: list[float] = []
     firsts: list[str] = []   # earliest tee time published, per night
@@ -120,7 +131,7 @@ def summarize(path: str = HISTORY_FILE) -> str:
             firsts.append(earliest)
         lines.append(
             f"{r.get('play_date',''):<12} {r.get('weekday',''):<10} "
-            f"{released_hm:<10} {_fmt_delta(delta):<9} {earliest:<9} {booked or 'no'}"
+            f"{released_hm:<10} {_fmt_delta(delta):<10} {earliest:<9} {booked or 'no'}"
         )
 
     if deltas:

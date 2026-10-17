@@ -6,13 +6,63 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-09-30 (Session 6 — the headless checkout block, then a
-WRONG-DAY booking: the booker bought a tee time for the current day while
-reporting the play date. Both fixed.)_
+_Last updated: 2026-10-17 (Session 7 — **THE CLUB MOVED THE RELEASE from 00:01
+to 09:00 ET**; the whole schedule moved with it.)_
+
+> **If it stops booking, check in this order:** (1) `release.release_time` — the
+> club moved it once already; (2) `runtime.headless` must be `false`; (3) the
+> sheet-date guard in the log.
 
 > **If the booker stops booking, check `runtime.headless` first** — see gotcha #9.
 
 ---
+
+## 0d. Session 7 (2026-10-17) — the club moved the release to 9:00 AM
+
+**What happened:** runs stopped booking after the 2026-10-13 run. Four nights
+(play dates Oct 28-31) polled the full hour — 128-131 checks each — and recorded
+`released=NEVER`. The midnight sheet simply stopped existing. A club employee
+told the user the release had moved to **9:00 AM**. Confirmed 2026-10-17 by
+probe: today+14 (Oct 31) was already published by evening, today+15 was not — so
+**the 14-day window is unchanged**, only the hour moved.
+
+Note the Session-6 closure fix behaved exactly right through this: it reported
+"No tee times were published for <date> at all" and booked nothing on any other
+day, instead of grabbing a fallback somewhere else.
+
+**What changed:**
+- `release.release_time: "09:00"` (was `00:01`). This is the ONE setting that
+  matters; everything else derives from it.
+- **launchd fires at 08:55** (was 23:58). The plist is now versioned in
+  `launchd/com.laneradbill.teebooker.nightly.plist`.
+- `compute_play_date` now reads `release_time` instead of assuming "after noon
+  means tomorrow's release" — a rule written for a 23:58 job that silently
+  mistargets a morning one. It keeps a grace window (the poll window) so a job
+  that starts slightly late still targets the sheet it was meant to.
+- `too_long_to_wait`: a job replayed hours late (launchd runs a missed calendar
+  job on the next wake) EXITS instead of holding the Mac awake ~19 hours under
+  `caffeinate` waiting for tomorrow's release.
+- A malformed `release_time` is now refused at config load rather than guessed
+  at — guessing it mistargets the play date by a day.
+- `earlier_watch.quiet_start/end` moved **23:30-01:30 -> 08:30-10:15**: that
+  window exists to keep the watcher out of the booking race, so it tracks
+  `release_time`. (The watcher is still not installed.)
+- The dashboard's Auto-booker card and `nightly.py --history` now read the
+  release time from config instead of printing a hardcoded "12:01 AM"/"00:01".
+- Tests **266** (was 257).
+
+**⚠️ Needs the user (sudo):**
+```bash
+sudo pmset repeat wakeorpoweron MTWRFSU 08:45:00
+```
+The Mac must be awake at 08:55. The old `wake 23:55 / sleep 01:15` is obsolete —
+and on this Mac that repeat had replaced the weekday wake the trading app needs,
+so a single 08:45 wake serves both.
+
+**Still unknown:** whether 09:00 is punctual. Under the old release the sheet
+appeared a median **+13m39s** after nominal. `retry_window_seconds` is still
+3540 (one hour), so the first few runs will measure it — watch the `vs nominal`
+column in `nightly.py --history` and tighten later.
 
 ## 0c. Session 5 (2026-09-15/16) — what's released, the Tuesday block, the watcher
 
@@ -250,13 +300,13 @@ rate-limiting occurred over 30 gentle checks.
 
 Two launchd LaunchAgents (in `~/Library/LaunchAgents/`):
 
-- **`com.laneradbill.teebooker.nightly.plist`** — fires nightly at **23:58**
+- **`com.laneradbill.teebooker.nightly.plist`** — fires daily at **08:55**
   under `caffeinate -i`, runs `nightly.py`. Flow:
   1. Compute the play date 14 days out; pick that weekday's times from
      `config.yaml` → `weekly_schedule` (empty list = skip, e.g. Mondays).
   2. Wait until ~60s before release, **log in** (before the surge), then hold to
-     12:01.
-  3. **Poll** the tee sheet gently from 12:01 until it books or ~1:00 AM.
+     the release.
+  3. **Poll** the tee sheet gently from 09:00 until it books or ~1 hour later.
   4. Book exactly one slot; notify; save a confirmation screenshot.
 - **`com.laneradbill.teebooker.dashboard.plist`** — keeps `dashboard.py` running
   (Flask, port 8787), RunAtLoad + KeepAlive.

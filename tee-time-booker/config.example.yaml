@@ -28,7 +28,11 @@ club:
 # and fires at that instant.
 release:
   days_ahead: 14          # times open 2 weeks out
-  release_time: "00:01"   # 12:01 AM
+  # When the club publishes a new day. Clubs DO change this: PCC ran 00:01
+  # for months and moved to 09:00 in Oct 2026. If bookings stop and the log
+  # says "No tee times were published ... at all" night after night, check
+  # this before anything else.
+  release_time: "09:00"   # 12:01 AM
   timezone: "America/New_York"  # handles EST/EDT automatically
   # How early (seconds) to wake up and be ready before the release instant.
   warmup_seconds: 30

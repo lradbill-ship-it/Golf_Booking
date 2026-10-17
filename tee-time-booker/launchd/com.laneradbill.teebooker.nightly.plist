@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.laneradbill.teebooker.nightly</string>
+
+    <!-- caffeinate -i prevents idle sleep while nightly.py runs (login + the
+         release race). PCC moved the tee-sheet release from 00:01 to 09:00 ET
+         in Oct 2026, so this fires at 08:55 and nightly.py waits until 09:00.
+         The Mac must be AWAKE at 08:55 (see pmset in AUTOMATION.md) and the
+         browser runs VISIBLE, so a GUI login session must be active. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
+        <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/.venv/bin/python</string>
+        <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/nightly.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>55</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/logs/nightly.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/logs/nightly.log</string>
+</dict>
+</plist>

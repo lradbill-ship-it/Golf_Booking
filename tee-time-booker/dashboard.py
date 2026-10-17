@@ -94,6 +94,18 @@ def _minutes_between(scan) -> int:
     return held - better if held is not None and better is not None else 0
 
 
+def _release_facts() -> dict:
+    """When the club releases, read from config — it changes (00:01 -> 09:00)."""
+    try:
+        cfg, _ = _load_cfg()
+        raw = cfg.release.release_time
+        hh, mm = (int(x) for x in raw.split(":"))
+        pretty = _dt.time(hh, mm).strftime("%-I:%M %p")
+        return {"release_time": pretty, "days_ahead": cfg.release.days_ahead}
+    except Exception:  # noqa: BLE001 — the card must never break the page
+        return {"release_time": "the daily release", "days_ahead": 14}
+
+
 WATCH_STALE_HOURS = 26  # scheduled several times a day; a day+ of silence means it stopped
 
 
@@ -171,6 +183,7 @@ def home():
         updated=time.strftime("%-I:%M %p", time.localtime(_cache["ts"])) if _cache["ts"] else "never",
         log=_tail_log(),
         watch=_earlier_watch(),
+        **_release_facts(),
     )
 
 
@@ -453,7 +466,7 @@ HOME_HTML = ("""
   <div class="card row">
     <div>
       <div class=big><span class="{{ 'status-off' if paused else 'status-on' }}">{{ 'Paused' if paused else 'Armed' }}</span></div>
-      <div class=meta>{{ 'Will NOT book until re-armed.' if paused else 'Books the date 14 days out at 12:01 AM.' }}</div>
+      <div class=meta>{{ 'Will NOT book until re-armed.' if paused else 'Books the date ' ~ days_ahead ~ ' days out at ' ~ release_time ~ '.' }}</div>
     </div>
     <form method=post action="{{ url_for('toggle_pause') }}">
       <button class="{{ 'brass' if paused else 'danger' }}" type=submit>{{ 'Arm' if paused else 'Pause' }}</button>

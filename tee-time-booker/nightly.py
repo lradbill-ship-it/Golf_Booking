@@ -2,7 +2,8 @@
 """Nightly auto-booker for the standing weekly schedule.
 
 Run by launchd shortly before midnight. It:
-  1. Computes the play date that opens at the upcoming 00:01 release
+  1. Computes the play date that opens at the upcoming release
+     (release.release_time; PCC moved from 00:01 to 09:00 in Oct 2026)
      (the calendar date of that release + release.days_ahead).
   2. Looks up that weekday's preferred times in config's `weekly_schedule`.
      An empty list means "skip tonight" (e.g. Mondays).
@@ -32,6 +33,9 @@ from tee_booker.notify import notify
 from tee_booker.scheduler import wait_until
 
 # Monday=0 .. Sunday=6, matching date.weekday().
+# A job replayed long after its slot must not sit waiting for the next release.
+MAX_PRERELEASE_WAIT_SECONDS = 3 * 3600
+
 WEEKDAY_KEYS = [
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
 ]
@@ -41,14 +45,47 @@ def _stamp(msg: str) -> None:
     print(f"[{datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
 
 
-def compute_play_date(now: datetime, days_ahead: int):
-    """The play date that opens at the next 00:01 release.
+def compute_play_date(now: datetime, days_ahead: int, release_time: str = "00:01",
+                      grace_seconds: float = 3600):
+    """The play date whose booking window this run belongs to.
 
-    Run in the evening, the next release is tomorrow's 00:01, which opens
-    (tomorrow + days_ahead). After midnight it's (today + days_ahead).
+    The next release at `release_time`, except that a release which has only
+    JUST passed (within `grace_seconds`, i.e. we are still inside the window
+    this run would have polled) still belongs to this run — so a job that starts
+    a few minutes late targets the sheet it was meant to, instead of skipping a
+    day ahead.
+
+    Reads the club's configured release time rather than assuming midnight: PCC
+    moved from 00:01 to 09:00 in Oct 2026, and the old rule ("after noon means
+    tomorrow's release") would have had a late-firing job wait ~19 hours.
     """
-    release_cal_date = (now + timedelta(days=1)).date() if now.hour >= 12 else now.date()
+    # No silent fallback: guessing a release time can mistarget the play date by
+    # a whole day, which is the failure this function exists to prevent. Config
+    # validation rejects a bad value at load, so reaching here means a caller
+    # passed one directly.
+    try:
+        hh, mm = (int(x) for x in str(release_time).split(":"))
+        release_today = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"Invalid release_time {release_time!r}; expected HH:MM (24-hour)."
+        ) from exc
+    if now < release_today or (now - release_today).total_seconds() <= grace_seconds:
+        release_cal_date = now.date()
+    else:
+        release_cal_date = (now + timedelta(days=1)).date()
     return release_cal_date + timedelta(days=days_ahead)
+
+
+def too_long_to_wait(login_at: datetime, now: datetime,
+                     limit: float = MAX_PRERELEASE_WAIT_SECONDS) -> bool:
+    """Is the next release so far off that waiting would hold the Mac awake?
+
+    launchd runs a missed calendar job on the next wake, so a job whose slot
+    passed hours ago must exit rather than sit on tomorrow's release under
+    `caffeinate`.
+    """
+    return (login_at - now).total_seconds() > limit
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -91,7 +128,10 @@ def main(argv=None) -> int:
             _stamp(f"Invalid --date {args.date!r}; expected YYYY-MM-DD.")
             return 2
     else:
-        play_date = compute_play_date(now, cfg.release.days_ahead)
+        play_date = compute_play_date(
+            now, cfg.release.days_ahead, cfg.release.release_time,
+            cfg.release.retry_window_seconds,
+        )
 
     weekday_key = WEEKDAY_KEYS[play_date.weekday()]
     schedule = cfg.raw.get("weekly_schedule") or {}
@@ -139,9 +179,18 @@ def main(argv=None) -> int:
         result = TeeBooker(cfg, creds, log=_stamp).run(play_date, dry_run=args.dry_run)
     else:
         # Wait until shortly before release, then let run() log in and hold the
-        # final seconds — so we authenticate before the 12:01 surge, not during.
+        # final seconds — so we authenticate before the release surge, not during.
         prelogin = int(getattr(cfg.release, "prelogin_seconds", 60) or 0)
         login_at = release_at - timedelta(seconds=prelogin)
+        # Never hold the Mac awake for hours. A job replayed well after its slot
+        # (launchd runs a missed calendar job on the next wake) would otherwise
+        # sit on tomorrow's release with caffeinate holding sleep off.
+        waiting = (login_at - now).total_seconds()
+        if too_long_to_wait(login_at, now):
+            _stamp(f"The next release ({release_at.isoformat()}) is {waiting / 3600:.1f}h "
+                   "away — exiting instead of holding the Mac awake. The scheduled job "
+                   "fires again before then.")
+            return 0
         _stamp(f"Waiting until {login_at.isoformat()} to log in ({prelogin}s before release) ...")
         wait_until(
             login_at,
@@ -178,7 +227,8 @@ def main(argv=None) -> int:
         if rec["seconds_after_nominal"] is not None:
             _stamp(
                 f"Sheet released {release_history._fmt_delta(rec['seconds_after_nominal'])} "
-                f"after nominal 00:01 (logged to release history)."
+                f"after the nominal {cfg.release.release_time} "
+                "(logged to release history)."
             )
     return 0 if result.success else 1
 

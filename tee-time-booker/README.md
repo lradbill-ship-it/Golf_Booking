@@ -60,12 +60,12 @@ python book.py book --date 2026-07-07 --dry-run
 # Book right now (times already open):
 python book.py book --date 2026-07-07
 
-# Wait for the 12:01 AM release two weeks out, then race to book:
+# Wait for the club's release (release.release_time) two weeks out, then race:
 python book.py schedule --date 2026-07-07
 ```
 
 For an unattended race, run `schedule` under `cron`/`systemd`/Task Scheduler on
-a machine that's awake at release time, or just start it before midnight — it
+a machine that's awake at release time, or just start it beforehand — it
 sleeps until the release instant on its own.
 
 ## Configuration reference

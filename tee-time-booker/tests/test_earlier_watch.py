@@ -223,8 +223,10 @@ def test_lock_is_exclusive_and_stale_locks_clear(tmp_path):
 
 def test_watch_config_defaults():
     c = WatchConfig.from_raw(None)
+    # The quiet window guards the BOOKING RACE, so it tracks release_time:
+    # 23:30-01:30 under the old 00:01 release, 08:30-10:15 under the 09:00 one.
     assert (c.min_improvement_minutes, c.min_days_ahead, c.quiet_start, c.quiet_end) == (
-        10, 1, "23:30", "01:30")
+        10, 1, "08:30", "10:15")
 
 
 @pytest.mark.parametrize("raw", [
@@ -422,8 +424,9 @@ NOON = datetime(2026, 9, 16, 12, 0)
 
 
 def test_quiet_window_run_does_not_touch_the_portal(runner):
+    # 09:00 is inside the default 08:30-10:15 window: the race is running.
     WE, state = runner
-    assert WE.main([], now=datetime(2026, 9, 16, 23, 58)) == 0
+    assert WE.main([], now=datetime(2026, 9, 16, 9, 0)) == 0
     assert state.fetches == 0 and state.scans == 0
 
 

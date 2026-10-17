@@ -1,12 +1,14 @@
 # Nightly auto-booking setup (Pennsauken CC / TeeItUp)
 
-This machine is set up to book tee times automatically at the 12:01 AM release.
+This machine books tee times automatically at the club's daily tee-sheet
+release. **PCC moved that release from 12:01 AM to 9:00 AM ET in Oct 2026** —
+the time lives in `config.yaml` -> `release.release_time`.
 
 ## What runs
 
 - **`nightly.py`** — each night it computes the play date 14 days out, picks
   that weekday's times from `config.yaml` → `weekly_schedule`, waits for the
-  12:01 AM Eastern release, then books `players` golfers at the first available
+  release (`release.release_time`, 9:00 AM ET), then books `players` golfers at the first available
   preferred time. An empty list for a weekday = skip (e.g. Mondays).
 
   Current schedule: **6:30 AM Tue–Fri**, **7:00/7:10 AM Sat–Sun**, **2 golfers**,
@@ -27,21 +29,23 @@ This machine is set up to book tee times automatically at the 12:01 AM release.
   relying on the fallback nightly.
 
 - **launchd job** `~/Library/LaunchAgents/com.laneradbill.teebooker.nightly.plist`
-  fires at **23:58** nightly and runs `nightly.py` under `caffeinate -i` (so the
+  fires at **08:55** daily and runs `nightly.py` under `caffeinate -i` (so the
   Mac won't idle-sleep during the booking). `nightly.py` logs in ~60s before
-  release and then **keeps polling from 12:01 until ~1:00 AM** (or until it
-  books), to catch a release that lands after midnight. Polling is deliberately
+  release and then **keeps polling from 09:00 for up to an hour** (or until it
+  books), to catch a release that lands late — under the old midnight release the
+  sheet reliably appeared ~13 min after nominal. Polling is deliberately
   gentle (~15s jittered, images/fonts/analytics blocked, back-off on rate-limit
   blocks) to stay under Cloudflare's limiter. Tighten the window once the
   release pattern is known.
 
 - **Power schedule (you must set this once, needs admin):**
   ```bash
-  sudo pmset repeat wakeorpoweron MTWRFSU 23:55:00 sleep MTWRFSU 01:15:00
+  sudo pmset repeat wakeorpoweron MTWRFSU 08:45:00
   ```
-  Wakes the Mac at 11:55 PM and sleeps it at 1:15 AM — the late sleep keeps it
-  awake for the full polling window (`release.retry_window_seconds`, 59 min) plus
-  margin. If you change that window, push the sleep time out to match.
+  Wakes the Mac at 8:45 AM, ten minutes before the 08:55 job. **The old schedule
+  (wake 11:55 PM, sleep 1:15 AM) is obsolete now that the release is at 9:00 AM** —
+  and on this Mac that `pmset repeat` had replaced the weekday wake the trading
+  app relies on, so moving it to the morning serves both.
   Verify with `pmset -g sched`. Clear with `sudo pmset repeat cancel`.
 
 ## Safety — it can only book the day it was asked for
@@ -86,7 +90,7 @@ one from the dashboard).
   un-skipped day. `python watch_earlier.py --plan` lists every reservation and
   why it is or isn't watched.
 - Refuses to run between **23:30 and 01:30** (`earlier_watch.quiet_start/end`)
-  so it can never log in during the midnight race, and honours the dashboard's
+  so it can never log in during the booking race (it tracks release_time), and honours the dashboard's
   kill switch.
 - History: `state/earlier_watch.jsonl`; `python watch_earlier.py --history`.
 - The dashboard card warns if no check has run for over a day.
