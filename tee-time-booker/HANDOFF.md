@@ -480,6 +480,7 @@ cd ~/Golf_Booking/tee-time-booker
 tail -f logs/nightly.log                       # watch the nightly run
 .venv/bin/python nightly.py --plan             # what it WOULD do tonight (no browser)
 .venv/bin/python nightly.py --history          # when the sheet actually released each night
+.venv/bin/python nightly.py --reservations     # the portal's OWN record (the only proof of what booked)
 .venv/bin/python watch_earlier.py --plan        # which tee times the earlier-time watcher would watch
 .venv/bin/python watch_earlier.py --history     # earliest open time per watched date
 .venv/bin/python nightly.py --date 2026-07-12 --no-wait --dry-run  # safe dry run
