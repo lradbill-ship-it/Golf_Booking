@@ -108,6 +108,39 @@ launchctl unload -w ~/Library/LaunchAgents/com.laneradbill.teebooker.watch.plist
 It runs at 7:10, 11:10, 15:10 and 19:10; a time the Mac slept through runs on the
 next wake.
 
+## The browser: attach to a real Chrome, don't launch one
+
+From 2026-11-07 every run died at `Page.fill: Timeout ... #email` with 0 checks.
+The cause was not a club policy — the club's network admin confirmed neither
+they nor TeeItUp changed anything. **Playwright-launched Chrome carries
+`--no-sandbox` and automation flags, and Cloudflare challenges it.** The same
+site, same minute, in a normally-launched Chrome: no challenge at all.
+
+So the booker **attaches to a Chrome that macOS started normally**:
+
+```bash
+# the job that starts it (fires 08:50, five minutes before the booker)
+cp launchd/com.laneradbill.teebooker.chrome.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.laneradbill.teebooker.chrome.plist
+
+# start it by hand right now
+open -na "Google Chrome" --args --remote-debugging-port=9222 \
+  --user-data-dir="$PWD/state/chrome-booking-profile"
+```
+
+- `runtime.cdp_endpoint` (`http://localhost:9222`) is how `nightly.py` finds it.
+  It opens ONE tab, books, closes that tab, and detaches. It never closes the
+  browser and never touches your personal Chrome profile.
+- The dedicated `--user-data-dir` is **required**: Chrome 136+ refuses
+  `--remote-debugging-port` on the default profile (anti cookie-theft). So this
+  cannot use, and does not touch, your everyday Chrome session.
+- ⚠️ A DevTools port lets any local process drive that browser. It is a
+  separate, dedicated profile, so the exposure is limited to this booking
+  session — but it is not nothing.
+- If the port is not listening the booker says so and falls back to launching
+  its own Chrome profile, which is the configuration that gets challenged.
+
+## Requirements / caveats
 ## Requirements / caveats
 
 - **Stay logged in** (screen may be **locked**, but don't fully log out) — a

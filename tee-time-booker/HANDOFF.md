@@ -470,7 +470,20 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    can be learned over several days.
    ⚠️ Waiting means a booking can land well after 09:00, so the good times may
    be gone; the always-book fallback then takes what is left.
-   **Still open:** whether a 15-min retry actually gets through at all. Worth asking the pro shop before investing further — and
+   **RESOLVED 2026-11-11 — it was never a club policy.** The club's network
+   admin confirmed neither they nor TeeItUp added any measure. The cause is
+   that **Playwright launches Chrome with `--no-sandbox` and automation flags**
+   (visible as Chrome's own "unsupported command-line flag" banner), and
+   Cloudflare challenges that client. The same site, same minute, in a
+   normally-launched Chrome: no challenge, full 26-card tee sheet.
+   **Fix: `runtime.cdp_endpoint` attaches to a Chrome macOS started normally**
+   (`launchd/com.laneradbill.teebooker.chrome.plist`, 08:50). Verified end to
+   end: attached, logged in, read the sheet, would have booked 8:20 AM.
+   The dedicated `--user-data-dir` is REQUIRED — Chrome 136+ refuses
+   `--remote-debugging-port` on the default profile — so this never touches the
+   member's own Chrome profile. If the port is not listening the booker says so
+   and falls back to launching its own profile (the configuration that gets
+   challenged). The 15-min challenge backoff stays as a safety net. Worth asking the pro shop before investing further — and
    note the 09:00 release is punctual (released 09:00:02, booked on check #1 on
    every successful run), so booking by hand at 9:00 is now realistic.
 

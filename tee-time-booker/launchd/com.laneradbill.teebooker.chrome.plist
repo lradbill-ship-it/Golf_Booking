@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.laneradbill.teebooker.chrome</string>
+
+    <!-- Starts a NORMAL Google Chrome (not Playwright's) with a DevTools port,
+         so nightly.py can attach to it instead of launching its own browser.
+
+         Why: Playwright-launched Chrome carries --no-sandbox and automation
+         flags. Cloudflare challenged that on every run from 2026-11-07 (play
+         dates Nov 21, 22, 24, 25 booked nothing). A normally-launched Chrome is
+         not challenged — verified 2026-11-11, which attached and read a full
+         26-card tee sheet with no challenge at all.
+
+         The dedicated --user-data-dir is REQUIRED, not a preference: Chrome
+         136+ refuses --remote-debugging-port on the default profile (an
+         anti-cookie-theft measure). This therefore never touches the member's
+         own Chrome profile or any of its sessions.
+
+         Fires at 08:50, five minutes before the booker's 08:55 job. `open -na`
+         is effectively a no-op when this profile's Chrome is already running. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-na</string>
+        <string>Google Chrome</string>
+        <string>--args</string>
+        <string>--remote-debugging-port=9222</string>
+        <string>--user-data-dir=/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/state/chrome-booking-profile</string>
+        <string>--restore-last-session</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>50</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/logs/chrome.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/Lane-DDABBER/Golf_Booking/tee-time-booker/logs/chrome.log</string>
+</dict>
+</plist>
