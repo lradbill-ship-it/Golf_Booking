@@ -32,6 +32,8 @@ def record(
     attempts: int,
     outcome: str,
     earliest_time: Optional[str] = None,
+    challenges: int = 0,
+    cleared_after_seconds: Optional[float] = None,
     path: str = HISTORY_FILE,
 ) -> dict:
     """Append one night's outcome and return the record that was written.
@@ -60,6 +62,11 @@ def record(
         "booked_time": booked_time,
         "earliest_time": earliest_time,
         "attempts": int(attempts),
+        # Cloudflare challenge observations — how often it blocked us and how
+        # long until it stopped, so the pattern can be learned over several days.
+        "challenges": int(challenges or 0),
+        "cleared_after_seconds": (round(cleared_after_seconds, 1)
+                                  if cleared_after_seconds is not None else None),
         "outcome": outcome,
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)

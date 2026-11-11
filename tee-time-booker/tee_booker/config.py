@@ -66,6 +66,11 @@ class ReleaseConfig:
     login_retry_seconds: int = 300
     # Gentle gap between login retries when offline.
     login_retry_interval_seconds: float = 10.0
+    # Cloudflare challenges the 09:00 release surge (from 2026-11-07). We do NOT
+    # answer or evade the challenge — we wait and ask again later, the way a
+    # person reloading would, until it stops being shown. These bound that wait.
+    challenge_backoff_seconds: float = 900.0        # 15 min between tries
+    challenge_max_total_seconds: float = 14400.0    # give up after 4 hours
 
     @property
     def tz(self) -> ZoneInfo:

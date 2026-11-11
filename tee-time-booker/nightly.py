@@ -244,6 +244,8 @@ def main(argv=None) -> int:
             booked_time=result.booked_time,
             earliest_time=result.earliest_time,
             attempts=result.attempts,
+            challenges=result.challenges,
+            cleared_after_seconds=result.cleared_after_seconds,
             outcome=result.message,
         )
         if rec["seconds_after_nominal"] is not None:

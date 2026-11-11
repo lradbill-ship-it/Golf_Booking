@@ -456,8 +456,21 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    on a challenge instead of re-logging in, the logged-out check is POSITIVE
    (`_is_logged_out`) rather than "marker missing", and `session.login` refuses
    a challenge page **without typing the credentials into it**.
-   **Open question for the member:** whether automated booking is acceptable to
-   PCC/TeeItUp at all. Worth asking the pro shop before investing further — and
+   **The pro shop confirmed (2026-11-11) they are fine with the member using an
+   autobooker, but said a Cloudflare whitelist is "above their paygrade".** That
+   permission covers the BOOKING; it does not extend to defeating the bot check,
+   and the people who could authorise that said they cannot. So: no solving the
+   challenge, no carrying a human-solved clearance token, no fingerprint/UA
+   spoofing, no driving the member's real Chrome in order to avoid being
+   challenged. **What the booker does instead: waits.** On a challenge it backs
+   off `release.challenge_backoff_seconds` (15 min) and asks again, up to
+   `challenge_max_total_seconds` (4 h), then reports that it was never let
+   through. Each run records `challenges` and `cleared_after_seconds` in
+   `state/release_history.jsonl` so the pattern — when the challenge lets go —
+   can be learned over several days.
+   ⚠️ Waiting means a booking can land well after 09:00, so the good times may
+   be gone; the always-book fallback then takes what is left.
+   **Still open:** whether a 15-min retry actually gets through at all. Worth asking the pro shop before investing further — and
    note the 09:00 release is punctual (released 09:00:02, booked on check #1 on
    every successful run), so booking by hand at 9:00 is now realistic.
 

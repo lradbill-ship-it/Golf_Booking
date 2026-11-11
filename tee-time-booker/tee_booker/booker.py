@@ -33,6 +33,11 @@ class BookingResult:
     # the nightly run to log the real release time. None if it never released.
     release_detected_at: Optional[datetime] = None
     attempts: int = 0
+    # How often Cloudflare challenged this run, and how long until it stopped.
+    # Recorded so the pattern can be learned: the challenge is only shown at the
+    # release surge, and we want to know when it lets go.
+    challenges: int = 0
+    cleared_after_seconds: Optional[float] = None
     # The earliest tee time published on the sheet that night, bookable or not.
     # Purely observational — it's how you notice sunrise pushing the first tee
     # time from 6:30 to 7:00 and move `preferred_times` deliberately.
@@ -227,6 +232,7 @@ class TeeBooker:
         interval = getattr(self.cfg.release, "login_retry_interval_seconds", 10.0)
         interval = float(interval) if interval is not None else 10.0
         deadline = time.monotonic() + budget
+        start_at = time.monotonic()
         attempt = 0
         while True:
             attempt += 1
@@ -234,6 +240,19 @@ class TeeBooker:
                 self._login(page)
                 return
             except Exception as exc:  # noqa: BLE001
+                challenged = "human-verification challenge" in str(exc)
+                if challenged:
+                    # Not answered, not evaded — waited out. This is where the
+                    # 2026-11-07..11 runs died outright.
+                    rel = self.cfg.release
+                    gap = float(getattr(rel, "challenge_backoff_seconds", 900.0))
+                    cap = float(getattr(rel, "challenge_max_total_seconds", 14400.0))
+                    if time.monotonic() - start_at + gap > cap:
+                        raise
+                    self.log(f"Login page is a Cloudflare challenge — waiting "
+                             f"{gap / 60:.0f} min and trying again (not answering it).")
+                    time.sleep(gap)
+                    continue
                 if not self._looks_like_network_error(exc) or time.monotonic() >= deadline:
                     raise
                 self.log(
@@ -344,6 +363,9 @@ class TeeBooker:
                      to try again (e.g. the next preferred time).
         """
         self._expected_play_date = play_date
+        challenges = 0            # how many times Cloudflare challenged us
+        challenge_started = None  # when the first challenge of this run appeared
+        cleared_after = None      # how long until it stopped challenging
         saw_slots = False       # did the RIGHT day's sheet ever publish a tee time?
         confirmed_empty = False  # ...and did we ever POSITIVELY read it as empty?
         start = time.monotonic()
@@ -356,21 +378,49 @@ class TeeBooker:
             attempt += 1
             elapsed = time.monotonic() - start
 
-            # Rate-limited? Back off and keep waiting rather than giving up.
+            # Cloudflare is challenging or throttling us. We never answer the
+            # challenge; we step back and ask again later, until it stops being
+            # shown. Bounded by challenge_max_total_seconds so this cannot turn
+            # into an all-day hammering.
             if self._is_blocked(page):
-                backoff = max(interval, 60.0)
-                self.log(f"[{elapsed:.0f}s] Rate-limited (Cloudflare) — backing off {backoff:.0f}s.")
-                if time.monotonic() + backoff >= deadline:
+                rel = self.cfg.release
+                backoff = max(float(getattr(rel, "challenge_backoff_seconds", 900.0)),
+                              interval)
+                cap = float(getattr(rel, "challenge_max_total_seconds", 14400.0))
+                challenges += 1
+                if challenge_started is None:
+                    challenge_started = time.monotonic()
+                waited = time.monotonic() - challenge_started
+                self.log(
+                    f"[{elapsed:.0f}s] Cloudflare is challenging us (#{challenges}; "
+                    f"{waited / 60:.0f} min so far). NOT answering it — waiting "
+                    f"{backoff / 60:.0f} min and asking again."
+                )
+                if waited + backoff > cap:
                     return BookingResult(
                         False,
-                        message="Still rate-limited when the retry window ended — check the portal.",
+                        message=(
+                            f"Cloudflare challenged every attempt for {waited / 3600:.1f}h "
+                            f"({challenges} times) and never let us through, so nothing was "
+                            "booked. The challenge was not answered or worked around. "
+                            "Book by hand, or check whether the club can allow the booker."
+                        ),
                         screenshot=self._screenshot(page, "blocked"),
                         release_detected_at=released_at,
                         attempts=attempt,
+                        challenges=challenges,
+                        cleared_after_seconds=cleared_after,
                     )
+                # Keep the ordinary window open while we are waiting it out.
+                deadline = max(deadline, time.monotonic() + backoff + interval * 4)
                 time.sleep(backoff)
                 self._reopen(page, play_date)
                 continue
+            if challenge_started is not None and cleared_after is None:
+                cleared_after = time.monotonic() - challenge_started
+                self.log(f"Cloudflare stopped challenging after "
+                         f"{cleared_after / 60:.0f} min ({challenges} challenge(s)) — "
+                         "continuing.")
 
             # The session can lapse during a long wait — re-login only when the
             # page POSITIVELY shows the logged-out state (absence of a marker can
@@ -433,6 +483,8 @@ class TeeBooker:
                         screenshot=self._screenshot(page, "confirmed"),
                         release_detected_at=released_at,
                         attempts=attempt,
+                        challenges=challenges,
+                        cleared_after_seconds=cleared_after,
                     )
                 if status == "stop":
                     # The click is not the record. Screenshot first (verifying
@@ -453,6 +505,8 @@ class TeeBooker:
                             screenshot=shot,
                             release_detected_at=released_at,
                             attempts=attempt,
+                            challenges=challenges,
+                            cleared_after_seconds=cleared_after,
                         )
                     if verdict is False:
                         # A point-in-time read. It rules a purchase IN with
@@ -479,6 +533,8 @@ class TeeBooker:
                         screenshot=shot,
                         release_detected_at=released_at,
                         attempts=attempt,
+                        challenges=challenges,
+                        cleared_after_seconds=cleared_after,
                     )
                 if status == "taken":
                     # The slot was grabbed by someone else during checkout. The
@@ -504,6 +560,8 @@ class TeeBooker:
                             screenshot=self._screenshot(page, "no_slot"),
                             release_detected_at=released_at,
                             attempts=attempt,
+                            challenges=challenges,
+                            cleared_after_seconds=cleared_after,
                         )
                     continue  # re-scan now, don't wait the full poll interval
                 self.log(f"[{elapsed:.0f}s] Couldn't secure {label} (no booking made); will retry.")
@@ -531,6 +589,8 @@ class TeeBooker:
                         screenshot=self._screenshot(page, "no_sheet"),
                         release_detected_at=released_at,
                         attempts=attempt,
+                        challenges=challenges,
+                        cleared_after_seconds=cleared_after,
                     )
                 return BookingResult(
                     False,
@@ -544,6 +604,8 @@ class TeeBooker:
                     screenshot=self._screenshot(page, "no_slot"),
                     release_detected_at=released_at,
                     attempts=attempt,
+                    challenges=challenges,
+                    cleared_after_seconds=cleared_after,
                 )
             # Jittered wait so reloads aren't a fixed-cadence metronome.
             time.sleep(interval + random.uniform(0, interval * 0.6))
