@@ -33,6 +33,7 @@ def record(
     outcome: str,
     earliest_time: Optional[str] = None,
     challenges: int = 0,
+    degraded: bool = False,
     cleared_after_seconds: Optional[float] = None,
     path: str = HISTORY_FILE,
 ) -> dict:
@@ -64,6 +65,7 @@ def record(
         "attempts": int(attempts),
         # Cloudflare challenge observations — how often it blocked us and how
         # long until it stopped, so the pattern can be learned over several days.
+        "degraded": bool(degraded),
         "challenges": int(challenges or 0),
         "cleared_after_seconds": (round(cleared_after_seconds, 1)
                                   if cleared_after_seconds is not None else None),

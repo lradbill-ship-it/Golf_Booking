@@ -36,6 +36,10 @@ class BookingResult:
     # How often Cloudflare challenged this run, and how long until it stopped.
     # Recorded so the pattern can be learned: the challenge is only shown at the
     # release surge, and we want to know when it lets go.
+    # True when the run had to use the browser we launch ourselves, which
+    # carries automation flags and gets challenged. Surfaced so a degraded run
+    # is never silent.
+    degraded: bool = False
     challenges: int = 0
     cleared_after_seconds: Optional[float] = None
     # The earliest tee time published on the sheet that night, bookable or not.
@@ -63,6 +67,7 @@ class TeeBooker:
         from playwright.sync_api import sync_playwright  # lazy import
 
         self._tz = tz  # used to timestamp the observed release moment
+        self._degraded = False
         rt = self.cfg.runtime
         with sync_playwright() as p:
             context, page, close_browser = self._open_browser(p)
@@ -101,7 +106,14 @@ class TeeBooker:
                         booked_time=label,
                         message=f"DRY RUN: would book {label!r}{note} (no click made).",
                     )
-                return self._attempt_booking(page, play_date)
+                result = self._attempt_booking(page, play_date)
+                if getattr(self, "_degraded", False):
+                    result.degraded = True
+                    result.message = (
+                        "[DEGRADED: used our own browser, not your Chrome] "
+                        + result.message
+                    )
+                return result
             except Exception as exc:  # noqa: BLE001
                 shot = self._screenshot(page, "error")
                 return BookingResult(
@@ -176,6 +188,53 @@ class TeeBooker:
 
     # -- steps -----------------------------------------------------------------
 
+    @staticmethod
+    def _cdp_port(endpoint: str):
+        """9222 from "http://localhost:9222". None if it isn't in there."""
+        m = re.search(r":(\d{2,5})(?:/|$)", str(endpoint or ""))
+        return int(m.group(1)) if m else None
+
+    def _debug_chrome_command(self, endpoint: str):
+        """The command that starts a NORMAL Chrome with a DevTools port.
+
+        A dedicated --user-data-dir is required, not optional: Chrome 136+
+        refuses --remote-debugging-port on the default profile.
+        """
+        port = self._cdp_port(endpoint)
+        profile = getattr(self.cfg.runtime, "user_data_dir", None)
+        if not port or not profile:
+            return None
+        path = Path(profile)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent.parent / path
+        return ["/usr/bin/open", "-na", "Google Chrome", "--args",
+                f"--remote-debugging-port={port}", f"--user-data-dir={path}"]
+
+    def _start_debug_chrome(self, endpoint: str, *, timeout: float = 30.0) -> bool:
+        """Start the debug Chrome and wait for its DevTools port to answer."""
+        import json as _json
+        import subprocess
+        import urllib.request
+
+        cmd = self._debug_chrome_command(endpoint)
+        if not cmd:
+            return False
+        try:
+            subprocess.run(cmd, check=False, capture_output=True, timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"Couldn't launch Chrome ({exc}).")
+            return False
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"{endpoint.rstrip('/')}/json/version",
+                                            timeout=3) as r:
+                    _json.loads(r.read().decode())
+                    return True
+            except Exception:  # noqa: BLE001
+                time.sleep(1.0)
+        return False
+
     def _open_browser(self, p):
         """Open the browser, reusing a persistent profile when one is configured.
 
@@ -189,15 +248,30 @@ class TeeBooker:
         if endpoint:
             # The member's own running Chrome. We borrow a tab and give it back:
             # closing the browser here would shut down their browser.
+            browser = None
             try:
                 browser = p.chromium.connect_over_cdp(endpoint)
-            except Exception as exc:  # noqa: BLE001
-                # Chrome is not listening (not started with
-                # --remote-debugging-port). Fall back to our own profile rather
-                # than failing the booking outright.
-                self.log(f"Couldn't attach to your Chrome at {endpoint} ({exc}). "
-                         "Falling back to the booker's own Chrome profile.")
-            else:
+            except Exception:  # noqa: BLE001
+                # Don't quietly drop to the path we KNOW gets challenged — fix
+                # the actual problem: start the debug Chrome and attach to that.
+                self.log(f"No Chrome listening at {endpoint} — starting one.")
+                if self._start_debug_chrome(endpoint):
+                    try:
+                        browser = p.chromium.connect_over_cdp(endpoint)
+                        self.log("Started it and attached.")
+                    except Exception as exc2:  # noqa: BLE001
+                        self.log(f"Started Chrome but still couldn't attach ({exc2}).")
+                else:
+                    self.log("Couldn't start a debug Chrome.")
+                if browser is None:
+                    self.log(
+                        "DEGRADED: falling back to launching our own browser. That "
+                        "client carries automation flags and has been challenged by "
+                        "Cloudflare since 2026-11-07, so this run may book nothing. "
+                        "Check that the com.laneradbill.teebooker.chrome job is loaded."
+                    )
+                    self._degraded = True
+            if browser is not None:
                 self.log(f"Attached to your running Chrome at {endpoint}.")
                 context = (browser.contexts[0] if browser.contexts
                            else browser.new_context())

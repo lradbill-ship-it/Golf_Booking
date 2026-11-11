@@ -245,6 +245,7 @@ def main(argv=None) -> int:
             earliest_time=result.earliest_time,
             attempts=result.attempts,
             challenges=result.challenges,
+            degraded=result.degraded,
             cleared_after_seconds=result.cleared_after_seconds,
             outcome=result.message,
         )

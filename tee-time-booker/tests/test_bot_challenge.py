@@ -288,3 +288,44 @@ def test_the_wait_is_bounded(monkeypatch):
     _run(b, monkeypatch)
     assert len(b.clock.slept) <= 5, f"kept retrying past the cap: {b.clock.slept}"
     assert sum(b.clock.slept) <= 3600.0
+
+
+# -- the fallback must FIX the problem, not land on the broken path ----------
+
+@pytest.mark.parametrize("endpoint,port", [
+    ("http://localhost:9222", 9222),
+    ("http://127.0.0.1:9333/", 9333),
+    ("http://localhost", None),
+    ("", None),
+])
+def test_cdp_port_is_parsed(endpoint, port):
+    assert TeeBooker._cdp_port(endpoint) == port
+
+
+def test_the_debug_chrome_command_always_uses_a_dedicated_profile():
+    # Chrome 136+ refuses --remote-debugging-port on the DEFAULT profile, so a
+    # command without --user-data-dir would silently never open the port.
+    b = TeeBooker.__new__(TeeBooker)
+    b.cfg = SimpleNamespace(runtime=SimpleNamespace(user_data_dir="state/chrome-booking-profile"))
+    cmd = b._debug_chrome_command("http://localhost:9222")
+    assert "--remote-debugging-port=9222" in cmd
+    assert any(a.startswith("--user-data-dir=") for a in cmd)
+    assert any(a.endswith("state/chrome-booking-profile") for a in cmd)
+    # and an absolute path, since the job runs from launchd
+    profile = [a for a in cmd if a.startswith("--user-data-dir=")][0].split("=", 1)[1]
+    assert profile.startswith("/")
+
+
+def test_no_command_without_a_profile_dir():
+    b = TeeBooker.__new__(TeeBooker)
+    b.cfg = SimpleNamespace(runtime=SimpleNamespace(user_data_dir=None))
+    assert b._debug_chrome_command("http://localhost:9222") is None
+
+
+def test_a_degraded_run_says_so_in_its_message():
+    from tee_booker.booker import BookingResult
+    r = BookingResult(True, booked_time="8:30 AM", message="Booked 8:30 AM for 2 players.")
+    assert r.degraded is False          # default must be the good path
+    r.degraded = True
+    r.message = "[DEGRADED: used our own browser, not your Chrome] " + r.message
+    assert "DEGRADED" in r.message
