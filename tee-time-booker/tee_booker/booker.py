@@ -247,17 +247,31 @@ class TeeBooker:
         self.log(f"Opening tee sheet {url}")
         page.goto(url, wait_until="domcontentloaded")
 
-        # If the member session didn't carry over (the tee sheet shows logged
-        # out), log in again and reopen once — a logged-out tee sheet shows no
-        # bookable member times.
-        marker = self.cfg.selectors.get("login_success_marker")
-        if allow_relogin and marker:
+        # A bot challenge is not a logged-out session. On 2026-11-07..11 the
+        # 09:00 release was met by Cloudflare's "Verify you are human" page: the
+        # profile marker was absent, the booker concluded "logged out", and the
+        # re-login then timed out on #email because the login page was the
+        # challenge too — killing the whole run with a bare Playwright error.
+        if self._is_blocked(page):
+            self.log("Cloudflare is challenging or throttling this request "
+                     "(not a logged-out session) — leaving the page alone.")
+            return
+
+        # Only re-login when the page POSITIVELY shows the logged-out state.
+        # Absence of the marker can just mean the SPA hasn't painted yet, or
+        # that we are looking at an interstitial.
+        if allow_relogin and self.cfg.selectors.get("login_success_marker"):
             try:
-                page.wait_for_selector(marker, timeout=6_000)
+                page.wait_for_selector(self.cfg.selectors["login_success_marker"],
+                                       timeout=6_000)
             except Exception:  # noqa: BLE001
-                self.log("Tee sheet is logged out — re-logging in and reopening.")
-                self._login(page)
-                return self._open_tee_sheet(page, play_date, allow_relogin=False)
+                if not self._is_logged_out(page):
+                    self.log("No profile marker yet, but the page does not show the "
+                             "logged-out state — not re-logging in.")
+                else:
+                    self.log("Tee sheet is logged out — re-logging in and reopening.")
+                    self._login(page)
+                    return self._open_tee_sheet(page, play_date, allow_relogin=False)
 
         dp = self.cfg.date_picker or {}
         if dp.get("enabled"):
@@ -595,9 +609,16 @@ class TeeBooker:
 
     # -- slot helpers ----------------------------------------------------------
 
+    # Cloudflare stands in front of the portal. It shows these when it is
+    # challenging or throttling us instead of serving the site. We only DETECT
+    # them: a challenge is the club's bot protection doing its job, and the
+    # booker must report it plainly, never try to satisfy or evade it.
     _BLOCK_MARKERS = (
         "rate limited", "error 1015", "banned you temporarily",
         "attention required", "just a moment",
+        "verify you are human", "performing security verification",
+        "security service to protect", "checking your browser",
+        "needs to review the security of your connection",
     )
 
     def _is_blocked(self, page) -> bool:

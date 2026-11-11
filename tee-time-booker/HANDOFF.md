@@ -6,11 +6,16 @@ assistant memory at
 `~/.claude/projects/-Users-Lane-DDABBER-Golf-Booking/memory/` (loaded
 automatically each session).
 
-_Last updated: 2026-10-17 (Session 7 — **THE CLUB MOVED THE RELEASE from 00:01
+_Last updated: 2026-11-11 (Session 8 — Cloudflare now challenges the 09:00
+release; Sat/Sun retargeted to 8:30-9:40.)_
+
+_Previously: 2026-10-17 (Session 7 — **THE CLUB MOVED THE RELEASE from 00:01
 to 09:00 ET**; the whole schedule moved with it.)_
 
-> **If it stops booking, check in this order:** (1) `release.release_time` — the
-> club moved it once already; (2) `runtime.headless` must be `false`; (3) the
+> **If it stops booking, check in this order:** (1) a **Cloudflare challenge** at
+> the release (gotcha #11 — look for `Page.fill` timeouts on `#email`, or the
+> new "challenging or throttling" log line); (2) `release.release_time` — the
+> club moved it once already; (3) `runtime.headless` must be `false`; (4) the
 > sheet-date guard in the log.
 
 > **If the booker stops booking, check `runtime.headless` first** — see gotcha #9.
@@ -435,6 +440,26 @@ Gitignored (local only): `config.yaml` (real URLs + selectors), `.env`
    for <date> at all ... likely closed ... nothing was booked on any other day",
    distinct from "times were published, so they were taken". `_slot_count`
    returning -1 means COULDN'T COUNT and is never called a closure.
+
+11. **CLOUDFLARE CHALLENGES THE 09:00 RELEASE (from 2026-11-07).** Four runs
+   (play dates Nov 21, 22, 24, 25) died at `Page.fill: Timeout ... waiting for
+   locator("#email")` with 0 checks. The error was misleading: login at 08:59
+   SUCCEEDED; at 09:00 the tee sheet came back as Cloudflare's **"Verify you
+   are human"** interstitial, the profile marker was absent, `_open_tee_sheet`
+   concluded "logged out", and the re-login hit the challenge page too — so the
+   #email field never existed. Confirmed from
+   `screenshots/20261111-090036-error.png`. The challenge is specific to the
+   release surge: at 15:15 the same day the login page loaded normally.
+   **This is the club's bot protection. The booker DETECTS and REPORTS it; it
+   does not and will not try to satisfy, solve or evade it.** `_is_blocked`
+   now knows the Cloudflare challenge wording, `_open_tee_sheet` returns early
+   on a challenge instead of re-logging in, the logged-out check is POSITIVE
+   (`_is_logged_out`) rather than "marker missing", and `session.login` refuses
+   a challenge page **without typing the credentials into it**.
+   **Open question for the member:** whether automated booking is acceptable to
+   PCC/TeeItUp at all. Worth asking the pro shop before investing further — and
+   note the 09:00 release is punctual (released 09:00:02, booked on check #1 on
+   every successful run), so booking by hand at 9:00 is now realistic.
 
 ## 7. Open items / next steps
 

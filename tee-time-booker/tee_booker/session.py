@@ -15,11 +15,33 @@ def origin_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+# Reported, never satisfied: these mean the site is challenging automation.
+_CHALLENGE_MARKERS = (
+    "verify you are human", "performing security verification",
+    "security service to protect", "checking your browser", "just a moment",
+    "attention required",
+)
+
+
+def _looks_challenged(page) -> bool:
+    try:
+        return any(m in (page.inner_text("body") or "").lower()
+                   for m in _CHALLENGE_MARKERS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def login(page, cfg, creds, *, log=print) -> None:
     """Fill and submit the login form, then wait for the success marker."""
     s = cfg.selectors
     log(f"Opening login page {cfg.club.login_url}")
     page.goto(cfg.club.login_url, wait_until="domcontentloaded")
+    if _looks_challenged(page):
+        raise RuntimeError(
+            "The login page is a Cloudflare human-verification challenge, not the "
+            "sign-in form. Nothing was attempted. This is the club's bot "
+            "protection; it is not something the booker works around."
+        )
     page.fill(s["username"], creds.username)
     page.fill(s["password"], creds.password)
     page.click(s["login_button"])
