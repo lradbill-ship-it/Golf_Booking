@@ -204,6 +204,11 @@ runtime:
   # forever at the final purchase ("Processing cart items ( 0 of 1 )") — six
   # nights in a row booked nothing. A visible browser books in ~4s. A visible
   # window needs an active GUI login session (a locked screen is fine).
+  # Reuse one browser profile across runs (cookies/storage), like a real
+  # member's browser. Gitignored; omit for a throwaway context each run.
+  # Drive the real Google Chrome rather than Playwright's bundled Chromium.
+  browser_channel: "chrome"
+  user_data_dir: "state/browser-profile"
   headless: false
   screenshot_on_error: true
   screenshot_dir: "screenshots"

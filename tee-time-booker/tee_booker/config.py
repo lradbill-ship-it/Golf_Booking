@@ -237,6 +237,16 @@ class RuntimeConfig:
     # the checkout hang of 2026-09-23.. is only reproducible with automation,
     # and a resource the checkout waits on is a prime suspect.
     block_resources: bool = True
+    # Directory for a PERSISTENT browser profile (cookies, localStorage, cache),
+    # relative to the project root. A fresh blank context every single morning
+    # is itself anomalous behaviour — a real member's browser remembers its
+    # session. None keeps the old throwaway-context behaviour.
+    user_data_dir: Optional[str] = None
+    # Which browser to drive. None = Playwright's bundled Chromium, which is a
+    # distinctly automation-flavoured build. "chrome" drives the real Google
+    # Chrome installed on this Mac. This runs the genuine browser; it does not
+    # disguise the fact that the session is automated.
+    browser_channel: Optional[str] = None
     screenshot_on_error: bool = True
     screenshot_dir: str = "screenshots"
     slow_mo_ms: int = 0

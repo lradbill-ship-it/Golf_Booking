@@ -65,16 +65,10 @@ class TeeBooker:
         self._tz = tz  # used to timestamp the observed release moment
         rt = self.cfg.runtime
         with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=rt.headless,
-                slow_mo=rt.slow_mo_ms or 0,
-            )
-            context = browser.new_context()
+            context, page, close_browser = self._open_browser(p)
             # Drop heavy, non-essential traffic (images/fonts/media + analytics
-            # trackers). Lighter footprint = far fewer requests per reload, which
-            # keeps the long poll well under the site's rate limiter.
+            # trackers) when runtime.block_resources is on.
             context.route("**/*", self._maybe_block)
-            page = context.new_page()
             try:
                 self._login_resiliently(page)
                 if release_at is not None and tz is not None and not dry_run:
@@ -114,16 +108,7 @@ class TeeBooker:
                     False, message=f"Error: {exc}", screenshot=shot
                 )
             finally:
-                # Close both even if the first close raises, so a crashed
-                # context can never leak the underlying browser process.
-                try:
-                    context.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    browser.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                close_browser()
 
     def scan_for_earlier(self, helds, *, min_improvement: int):
         """Look at each held date's sheet for a better time. READ-ONLY.
@@ -141,24 +126,15 @@ class TeeBooker:
         run = WatchRun()
         rt = self.cfg.runtime
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=rt.headless, slow_mo=rt.slow_mo_ms or 0)
-            context = browser.new_context()
+            context, page, close_browser = self._open_browser(p)
             context.route("**/*", self._maybe_block)
-            page = context.new_page()
             try:
                 self._login_resiliently(page)
                 self._scan_for_earlier_on(page, helds, run, min_improvement=min_improvement)
             except Exception as exc:  # noqa: BLE001
                 run.error = str(exc)
             finally:
-                try:
-                    context.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    browser.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                close_browser()
         return run
 
     def _scan_for_earlier_on(self, page, helds, run, *, min_improvement: int) -> None:
@@ -199,6 +175,52 @@ class TeeBooker:
                                      if better else "nothing better."))
 
     # -- steps -----------------------------------------------------------------
+
+    def _open_browser(self, p):
+        """Open the browser, reusing a persistent profile when one is configured.
+
+        Returns (context, page, close). A member's own browser keeps its cookies
+        and storage between visits; launching a brand-new blank context every
+        morning is unusual client behaviour in its own right. This is about
+        behaving like an ordinary browser — it does not disguise anything.
+        """
+        rt = self.cfg.runtime
+        profile = getattr(rt, "user_data_dir", None)
+        if profile:
+            path = Path(profile)
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent.parent / path
+            path.mkdir(parents=True, exist_ok=True)
+            self.log(f"Using the saved browser profile at {path}")
+            kwargs = dict(headless=rt.headless, slow_mo=rt.slow_mo_ms or 0)
+            channel = getattr(rt, "browser_channel", None)
+            if channel:
+                kwargs["channel"] = channel
+                self.log(f"Driving the real {channel} browser.")
+            context = p.chromium.launch_persistent_context(str(path), **kwargs)
+            page = context.pages[0] if context.pages else context.new_page()
+
+            def close():
+                try:
+                    context.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            return context, page, close
+
+        kwargs = dict(headless=rt.headless, slow_mo=rt.slow_mo_ms or 0)
+        if getattr(rt, "browser_channel", None):
+            kwargs["channel"] = rt.browser_channel
+        browser = p.chromium.launch(**kwargs)
+        context = browser.new_context()
+        page = context.new_page()
+
+        def close():
+            for shut in (context.close, browser.close):
+                try:
+                    shut()
+                except Exception:  # noqa: BLE001
+                    pass
+        return context, page, close
 
     def _login(self, page) -> None:
         from .session import login

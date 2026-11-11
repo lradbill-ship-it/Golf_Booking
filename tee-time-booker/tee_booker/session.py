@@ -42,10 +42,17 @@ def login(page, cfg, creds, *, log=print) -> None:
             "sign-in form. Nothing was attempted. This is the club's bot "
             "protection; it is not something the booker works around."
         )
+    marker = s.get("login_success_marker")
+    if marker:
+        try:
+            if page.locator(marker).count() > 0:
+                log("Already signed in (saved browser session) — no login needed.")
+                return
+        except Exception:  # noqa: BLE001
+            pass
     page.fill(s["username"], creds.username)
     page.fill(s["password"], creds.password)
     page.click(s["login_button"])
-    marker = s.get("login_success_marker")
     if marker:
         page.wait_for_selector(marker, timeout=20_000)
     else:
