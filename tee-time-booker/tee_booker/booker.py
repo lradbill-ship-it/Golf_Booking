@@ -185,6 +185,33 @@ class TeeBooker:
         behaving like an ordinary browser — it does not disguise anything.
         """
         rt = self.cfg.runtime
+        endpoint = getattr(rt, "cdp_endpoint", None)
+        if endpoint:
+            # The member's own running Chrome. We borrow a tab and give it back:
+            # closing the browser here would shut down their browser.
+            try:
+                browser = p.chromium.connect_over_cdp(endpoint)
+            except Exception as exc:  # noqa: BLE001
+                # Chrome is not listening (not started with
+                # --remote-debugging-port). Fall back to our own profile rather
+                # than failing the booking outright.
+                self.log(f"Couldn't attach to your Chrome at {endpoint} ({exc}). "
+                         "Falling back to the booker's own Chrome profile.")
+            else:
+                self.log(f"Attached to your running Chrome at {endpoint}.")
+                context = (browser.contexts[0] if browser.contexts
+                           else browser.new_context())
+                page = context.new_page()
+
+                def close():
+                    # Close OUR tab and detach. Never close their browser.
+                    for shut in (page.close, browser.close):
+                        try:
+                            shut()
+                        except Exception:  # noqa: BLE001
+                            pass
+                return context, page, close
+
         profile = getattr(rt, "user_data_dir", None)
         if profile:
             path = Path(profile)

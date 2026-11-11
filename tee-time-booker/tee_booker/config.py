@@ -247,6 +247,12 @@ class RuntimeConfig:
     # Chrome installed on this Mac. This runs the genuine browser; it does not
     # disguise the fact that the session is automated.
     browser_channel: Optional[str] = None
+    # Attach to the member's OWN already-running Chrome over the DevTools
+    # protocol, e.g. "http://localhost:9222", instead of launching a browser.
+    # That session is the member's: already signed in, with its own history and
+    # cookies. Nothing is spoofed — it is literally their browser.
+    # Chrome must have been started with --remote-debugging-port=<port>.
+    cdp_endpoint: Optional[str] = None
     screenshot_on_error: bool = True
     screenshot_dir: str = "screenshots"
     slow_mo_ms: int = 0
