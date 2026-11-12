@@ -46,6 +46,11 @@ class BookingResult:
     # Purely observational — it's how you notice sunrise pushing the first tee
     # time from 6:30 to 7:00 and move `preferred_times` deliberately.
     earliest_time: Optional[str] = None
+    # True ONLY for the "the right day's sheet was positively read as empty all
+    # night" verdict — a closed course or an unreleased sheet, not "my times
+    # were taken". A flag, not a phrase: the caller that queues the date for a
+    # re-check must not have to pattern-match prose that someone may reword.
+    no_sheet: bool = False
 
 
 class TeeBooker:
@@ -185,6 +190,218 @@ class TeeBooker:
                     f"target {held.target_label}; earliest open {earliest or 'nothing'}")
             self.log(f"{head} — " + (f"BETTER TIME OPEN: {label} ({gain} min closer)."
                                      if better else "nothing better."))
+
+    # -- re-check of dates that published no sheet ------------------------------
+
+    def recheck_no_sheet_dates(self, pendings, *, dry_run: bool = False):
+        """Re-open each date a past run ruled empty, and book it if a sheet has
+        appeared since. One browser session for the whole sweep.
+
+        This exists because the nightly job only ever looks at ONE date, 14 days
+        out. A date that published nothing (2026-11-26, Thanksgiving) was
+        correctly left unbooked and then never looked at again — so a holiday
+        sheet posted late would go unnoticed. This is the second look.
+
+        It is deliberately conservative. It books only when it can positively
+        read (a) the right day on the sheet and (b) the member having no
+        reservation that day. Anything it cannot read leaves the date pending
+        rather than guessing in either direction.
+        """
+        from playwright.sync_api import sync_playwright  # lazy import
+
+        from .no_sheet_watch import RecheckOutcome
+
+        outcomes: list = []
+        if not pendings:
+            return outcomes
+        with sync_playwright() as p:
+            context, page, close_browser = self._open_browser(p)
+            context.route("**/*", self._maybe_block)
+            try:
+                self._login_resiliently(page)
+                self._recheck_on(page, pendings, outcomes, dry_run=dry_run)
+            except Exception as exc:  # noqa: BLE001
+                # Log it here as well as recording it: a sweep that dies before
+                # the per-date loop has no `_record` call to speak for it, and
+                # an outcome nobody prints is not a report.
+                self.log(f"Re-check sweep failed before it could look: {exc}")
+                outcomes.append(RecheckOutcome(
+                    play_date=pendings[0].play_date,
+                    weekday=getattr(pendings[0], "weekday", ""),
+                    status="error",
+                    message=str(exc),
+                ))
+            finally:
+                close_browser()
+        return outcomes
+
+    def _sheet_date_verdict(self, page, play_date, *, timeout=None):
+        """True / False / None: is the page showing `play_date`'s sheet?
+
+        Only a positive match ever permits a click (2026-09-30: a page is not
+        evidence of which day it shows). But it WAITS for the header to settle
+        before answering, for two reasons found on 2026-11-12:
+
+          * On an empty sheet there are no cards to wait on, so reading the
+            header the instant after navigation can find no header at all.
+            That is "I could not look", not "wrong day" — collapsing the two
+            made the re-check report a date it simply had not read yet as a
+            page showing the wrong day.
+          * Right after navigating from another date, the header can still
+            carry the OLD date for a moment. Returning that first `False`
+            would be reading a stale repaint as a mismatch.
+
+        So: a True ends it immediately, anything else is re-read until the
+        timeout, and the last real reading is the answer (None if we never got
+        one).
+        """
+        if not self._sheet_date_check_on():
+            return True
+        if timeout is None:
+            # Explicit None check, not `or`: a configured 0 means "answer on the
+            # first reading", which is a real choice, not a missing value.
+            raw = getattr(self.cfg.release, "sheet_date_settle_seconds", None)
+            timeout = 10.0 if raw is None else float(raw)
+        deadline = time.monotonic() + timeout
+        last = None
+        while True:
+            verdict = self._sheet_date_matches(page, play_date)
+            if verdict is True:
+                return True
+            if verdict is not None:
+                last = verdict
+            if time.monotonic() >= deadline:
+                return last
+            time.sleep(0.5)
+
+    def _recheck_on(self, page, pendings, outcomes, *, dry_run: bool = False) -> None:
+        """The per-date sweep behind `recheck_no_sheet_dates` (browser-free to test)."""
+        from .no_sheet_watch import RecheckOutcome
+
+        for pending in pendings:
+            play_date = pending.play_date
+            weekday = getattr(pending, "weekday", "") or ""
+            times = list(getattr(pending, "times", None) or [])
+            if not times:
+                outcomes.append(RecheckOutcome(
+                    play_date=play_date, weekday=weekday, status="not_scheduled",
+                    message="no times are configured for that weekday — not booking it",
+                ))
+                self.log(f"Re-check {play_date}: no times configured for "
+                         f"{weekday or 'that weekday'} — skipping.")
+                continue
+            self.cfg.booking.preferred_times = times
+            self.cfg.booking.players = int(getattr(pending, "players", 0)
+                                           or self.cfg.booking.players)
+
+            def _record(status, message, cards=0, booked_time=None):
+                outcomes.append(RecheckOutcome(
+                    play_date=play_date, weekday=weekday, status=status,
+                    cards=cards, booked_time=booked_time, message=message,
+                ))
+                self.log(f"Re-check {play_date}: {message}")
+
+            try:
+                self._open_tee_sheet(page, play_date)
+            except Exception as exc:  # noqa: BLE001
+                _record("error", f"couldn't open the sheet ({exc}) — still pending")
+                continue
+
+            if self._is_blocked(page):
+                _record("blocked", "the portal is challenging us — ending this sweep")
+                return  # one block means the rest would be blocked too
+
+            verdict = self._sheet_date_verdict(page, play_date)
+            if verdict is None:
+                _record("unreadable_day",
+                        "couldn't read which date the sheet is for — not booking "
+                        "blind; still pending")
+                continue
+            if verdict is False:
+                _record("wrong_day", "the sheet on screen is NOT this date — not booking")
+                continue
+
+            cards = self._slot_count(page)
+            if cards < 0:
+                _record("unreadable", "couldn't count the tee times — still pending", cards)
+                continue
+            if cards == 0:
+                _record("still_empty", "still no tee times published", 0)
+                continue
+
+            # A sheet exists. Before clicking anything, make sure we would not be
+            # buying a second tee time for a day already covered — the member may
+            # have booked it himself by phone.
+            already = self._booked_on_portal(page, play_date, None)
+            if already is None:
+                _record("unverified",
+                        f"{cards} tee time(s) appeared, but the reservation list "
+                        "would not load — not booking blind; still pending", cards)
+                continue
+            if already:
+                _record("already_booked",
+                        f"{cards} tee time(s) appeared, and you already have a "
+                        "reservation that day — nothing to do", cards)
+                continue
+
+            # Reading the reservation list navigated the page away. Re-open the
+            # sheet and re-verify the date before any click.
+            try:
+                self._open_tee_sheet(page, play_date)
+            except Exception as exc:  # noqa: BLE001
+                _record("error", f"couldn't re-open the sheet ({exc}) — still pending", cards)
+                continue
+            verdict = self._sheet_date_verdict(page, play_date)
+            if verdict is not True:
+                _record("wrong_day" if verdict is False else "unreadable_day",
+                        ("the sheet on screen is NOT this date after re-opening"
+                         if verdict is False else
+                         "couldn't re-read which date the sheet is for")
+                        + " — not booking; still pending", cards)
+                continue
+
+            slot = self._find_available_slot(page)
+            note = ""
+            if slot is None:
+                found = self._find_fallback_slot(page)
+                if found is not None:
+                    slot, _label, offset = found
+                    target = self.fallback_target()
+                    note = (" (closest available — "
+                            f"{self._describe_offset(offset, target[1] if target else '')})")
+            if slot is None:
+                _record("not_bookable",
+                        f"{cards} tee time(s) published, but none bookable in range "
+                        "— still pending", cards)
+                continue
+
+            label = self._slot_label_text(slot)
+            if dry_run:
+                _record("would_book", f"DRY RUN: would book {label!r}{note}", cards,
+                        booked_time=label)
+                continue
+
+            step = self._book_slot(page, slot)
+            if step == "booked":
+                _record("booked", f"a sheet appeared — BOOKED {label}{note}", cards,
+                        booked_time=label)
+                continue
+            if step == "stop":
+                # A purchase was attempted but not confirmed. The portal's own
+                # reservation list is the only thing that settles it.
+                confirmed = self._booked_on_portal(page, play_date, label)
+                if confirmed:
+                    _record("booked", f"a sheet appeared — BOOKED {label}{note} "
+                                      "(confirmed on your reservation list)",
+                            cards, booked_time=label)
+                else:
+                    _record("unconfirmed",
+                            f"tried {label} but could not confirm it "
+                            f"({'not on your list' if confirmed is False else 'list unreadable'})"
+                            " — not retrying today; still pending", cards)
+                continue
+            _record("not_bookable",
+                    f"couldn't secure {label} (nothing was bought) — still pending", cards)
 
     # -- steps -----------------------------------------------------------------
 
@@ -709,6 +926,7 @@ class TeeBooker:
                             "likely closed that day, or the sheet never released. "
                             "Nothing was booked, and nothing was booked on any other day."
                         ),
+                        no_sheet=True,
                         screenshot=self._screenshot(page, "no_sheet"),
                         release_detected_at=released_at,
                         attempts=attempt,

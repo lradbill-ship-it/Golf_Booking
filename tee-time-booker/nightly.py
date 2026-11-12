@@ -12,8 +12,13 @@ Run by launchd shortly before midnight. It:
      sheet shifts later as sunrise does), at the closest available time within
      the `booking.fallback` window.
 
+After the night's own date, it re-checks any date a PAST run found had no tee
+sheet at all (2026-11-26, Thanksgiving). Those dates are never revisited by the
+14-days-ahead schedule, so a holiday sheet posted late would otherwise be missed.
+
 Flags:
   --plan        Print what it would do (date, weekday, times) and exit. No browser.
+  --recheck     Only re-check the no-sheet dates, then exit.
   --dry-run     Log in and report the slot it would book, without booking.
   --no-wait     Skip waiting for the release instant (book/inspect immediately).
   --date DATE   Override the computed play date (YYYY-MM-DD), for testing.
@@ -26,7 +31,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta
 
-from tee_booker import release_history, state_store
+from tee_booker import no_sheet_watch, release_history, state_store
 from tee_booker.booker import TeeBooker
 from tee_booker.config import Config, ConfigError, Credentials
 from tee_booker.notify import notify
@@ -100,7 +105,78 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Print the recorded release-time history and exit.")
     p.add_argument("--reservations", action="store_true",
                    help="Print the portal's own reservation list and exit (read-only).")
+    p.add_argument("--recheck", action="store_true",
+                   help="Only re-check dates that published no tee sheet, then exit.")
     return p
+
+
+def sweep_no_sheet_dates(cfg, creds, *, dry_run: bool = False, today=None,
+                         exclude=None):
+    """Re-check the dates a past run ruled empty. Returns the outcomes.
+
+    The nightly schedule only ever looks at one date, 14 days out, so a date
+    that published nothing is otherwise never looked at again. This is the
+    second look — it runs AFTER the night's own booking so it can never delay
+    the one that races the release.
+    """
+    today = today or datetime.now(cfg.release.tz).date()
+    entries = no_sheet_watch.load()
+    kept, dropped = no_sheet_watch.prune(entries, today)
+    if dropped:
+        no_sheet_watch.save(kept)
+        _stamp("Re-check list: dropped " + ", ".join(sorted(dropped))
+               + " (no longer ahead of us).")
+    pendings = [p for p in no_sheet_watch.due(kept, today)
+                if exclude is None or p.play_date != exclude]
+    if not pendings:
+        return []
+
+    schedule = cfg.raw.get("weekly_schedule") or {}
+    players = int(schedule.get("players", cfg.booking.players))
+    for pending in pendings:
+        # Derived from the CURRENT config every time, never stored: a stored
+        # copy would go stale the moment weekly_schedule changes.
+        key = WEEKDAY_KEYS[pending.play_date.weekday()]
+        pending.weekday = key.title()
+        pending.times = list(schedule.get(key) or [])
+        pending.players = players
+
+    _stamp(f"Re-checking {len(pendings)} date(s) that published no tee sheet: "
+           + ", ".join(str(p.play_date) for p in pendings))
+    outcomes = TeeBooker(cfg, creds, log=_stamp).recheck_no_sheet_dates(
+        pendings, dry_run=dry_run
+    )
+    unresolved = [o for o in outcomes
+                  if o.status in ("error", "blocked", "wrong_day", "unreadable",
+                                  "unreadable_day", "unverified", "unconfirmed")]
+    if unresolved:
+        _stamp("Re-check could not settle: "
+               + "; ".join(f"{o.play_date} ({o.status})" for o in unresolved)
+               + " — those dates stay on the list.")
+    for outcome in outcomes:
+        if dry_run:
+            continue
+        no_sheet_watch.mark_checked(outcome.play_date)
+        if outcome.resolved:
+            no_sheet_watch.forget(outcome.play_date)
+        if outcome.booked:
+            notify(f"✅ {outcome.play_date} ({outcome.weekday}): {outcome.message}",
+                   creds.notify_webhook_url, log=_stamp)
+    return outcomes
+
+
+def _sweep_only(cfg, args) -> int:
+    """Run the re-check on a night the schedule itself has nothing to do."""
+    if args.plan:
+        _stamp(no_sheet_watch.summarize())
+        return 0
+    try:
+        creds = Credentials.from_env(args.env)
+    except ConfigError as exc:
+        _stamp(f"Configuration problem: {exc}")
+        return 2
+    sweep_no_sheet_dates(cfg, creds, dry_run=args.dry_run)
+    return 0
 
 
 def main(argv=None) -> int:
@@ -139,6 +215,9 @@ def main(argv=None) -> int:
     except ConfigError as exc:
         _stamp(f"Configuration problem: {exc}")
         return 2
+
+    if args.recheck:
+        return _sweep_only(cfg, args)
 
     tz = cfg.release.tz
     now = datetime.now(tz)
@@ -182,13 +261,15 @@ def main(argv=None) -> int:
 
     if state_store.is_skipped(play_date) and not args.plan:
         _stamp(f"{play_date} is on the skip list — skipping (per dashboard command).")
-        return 0
+        # A skipped night still owes the re-check list a look.
+        return _sweep_only(cfg, args)
 
     if not times:
         _stamp(f"No times configured for {weekday_key.title()} — skipping tonight.")
-        return 0
+        return _sweep_only(cfg, args)
 
     if args.plan:
+        _stamp(no_sheet_watch.summarize())
         return 0
 
     try:
@@ -255,6 +336,20 @@ def main(argv=None) -> int:
                 f"after the nominal {cfg.release.release_time} "
                 "(logged to release history)."
             )
+
+    # A day that published NO sheet at all is not a day we lost — it is a day
+    # nobody has looked at yet. The 14-days-ahead schedule will never return to
+    # it, so queue it for a daily re-check until it arrives.
+    if result.no_sheet and not args.dry_run:
+        no_sheet_watch.remember(play_date, weekday_key.title())
+        _stamp(f"{play_date} published no tee sheet — added to the re-check list; "
+               "every run from now until that day will look again.")
+
+    # Always after the night's own booking, never before: this must not delay
+    # the one attempt that races the release.
+    if not args.dry_run:
+        sweep_no_sheet_dates(cfg, creds, exclude=play_date)
+
     return 0 if result.success else 1
 
 

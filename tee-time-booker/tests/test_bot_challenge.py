@@ -34,8 +34,8 @@ class _Loc:
 
 
 class _Page:
-    def __init__(self, body, marker=False):
-        self.body, self.marker = body, marker
+    def __init__(self, body, marker=False, form=True):
+        self.body, self.marker, self.form = body, marker, form
         self.gotos, self.filled, self.clicked = [], [], []
 
     def inner_text(self, _sel):
@@ -49,8 +49,11 @@ class _Page:
             raise TimeoutError("no marker")
         return True
 
-    def locator(self, _sel):
-        return _Loc(0)
+    def locator(self, sel):
+        # The sign-in form is present on a real logged-out login page; saying
+        # otherwise made this fake a page with no form, which is a different
+        # situation entirely.
+        return _Loc(1 if (self.form and sel == "#email") else 0)
 
     def fill(self, sel, value):
         self.filled.append((sel, value))
