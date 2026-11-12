@@ -11,7 +11,7 @@ and the reservation-list network call are faked. Every click is tallied, so
 "it did not book" is proved by the click count, not by a status string.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -446,9 +446,117 @@ def test_a_dry_run_changes_nothing_on_disk(wired):
     assert nsw.load() == before
 
 
-def test_only_the_no_sheet_verdict_queues_a_date():
-    # "Tee times WERE published, they were taken" is a different outcome and
-    # must NOT come back every morning.
+# -- main() actually reaching all of the above ------------------------------
+#
+# The checks above exercise `sweep_no_sheet_dates` directly. That proves the
+# sweep works; it proves nothing about anyone CALLING it. A capability with no
+# caller is a description, so these drive the real `main()`.
+
+
+def _main_env(monkeypatch, tmp_path, result, *, schedule=None):
+    """Run nightly.main() against fakes and report what it did."""
+    import nightly
+    from tee_booker import config as cfgmod
+
+    calls = SimpleNamespace(swept=[], excluded=object(), booked_for=None)
+
+    cfg = SimpleNamespace(
+        release=SimpleNamespace(
+            tz=None, days_ahead=14, release_time="09:00",
+            retry_window_seconds=3540, prelogin_seconds=60, warmup_seconds=0,
+            release_moment_for=lambda d: datetime(2026, 11, 12, 9, 0),
+        ),
+        booking=SimpleNamespace(players=2, preferred_times=[], fallback=None),
+        raw={"weekly_schedule": schedule or {"thursday": ["6:30 AM"], "players": 2}},
+    )
+
+    class _Fake:
+        def __init__(self, c, creds, *, log=print):
+            pass
+
+        def fallback_window(self):
+            return None
+
+        def fallback_target(self):
+            return None
+
+        def run(self, play_date, **kw):
+            calls.booked_for = play_date
+            return result
+
+    monkeypatch.setattr(cfgmod.Config, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(nightly.Config, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(nightly.Credentials, "from_env",
+                        staticmethod(lambda *a, **k: SimpleNamespace(
+                            username="u", password="p", notify_webhook_url=None)))
+    monkeypatch.setattr(nightly, "TeeBooker", _Fake)
+    monkeypatch.setattr(nightly, "notify", lambda *a, **k: None)
+    monkeypatch.setattr(nightly.state_store, "is_paused", lambda: False)
+    monkeypatch.setattr(nightly.state_store, "is_skipped", lambda d: False)
+    monkeypatch.setattr(nsw, "PENDING_FILE", str(tmp_path / "p.json"))
+
+    def _sweep(c, creds, *, dry_run=False, today=None, exclude=None):
+        calls.swept.append(exclude)
+        return []
+    monkeypatch.setattr(nightly, "sweep_no_sheet_dates", _sweep)
+    return nightly, calls
+
+
+def test_main_queues_a_no_sheet_day_and_then_sweeps(tmp_path, monkeypatch):
     from tee_booker.booker import BookingResult
-    assert BookingResult(False, message="nothing bookable").no_sheet is False
-    assert BookingResult(False, message="no sheet", no_sheet=True).no_sheet is True
+
+    result = BookingResult(False, message="no sheet at all", no_sheet=True)
+    nightly, calls = _main_env(monkeypatch, tmp_path, result)
+    nightly.main(["--no-wait", "--date", "2026-11-26"])
+
+    assert calls.booked_for == THANKSGIVING, "the night's own run still happened"
+    assert set(nsw.load()) == {"2026-11-26"}, "main() never queued the date"
+    assert calls.swept == [THANKSGIVING], \
+        "main() never swept, or swept without excluding tonight's own date"
+
+
+def test_main_does_not_queue_a_day_whose_times_were_merely_taken(tmp_path, monkeypatch):
+    from tee_booker.booker import BookingResult
+
+    # "Tee times WERE published, they were taken" is a different outcome and
+    # must not come back every morning for two weeks.
+    result = BookingResult(False, message="nothing bookable; they were taken")
+    nightly, calls = _main_env(monkeypatch, tmp_path, result)
+    nightly.main(["--no-wait", "--date", "2026-11-26"])
+
+    assert nsw.load() == {}
+    assert calls.swept == [THANKSGIVING], "the sweep still runs on a normal night"
+
+
+def test_main_sweeps_even_after_a_successful_booking(tmp_path, monkeypatch):
+    from tee_booker.booker import BookingResult
+
+    result = BookingResult(True, booked_time="6:30 AM", message="Booked 6:30 AM")
+    nightly, calls = _main_env(monkeypatch, tmp_path, result)
+    assert nightly.main(["--no-wait", "--date", "2026-11-26"]) == 0
+    assert calls.swept == [THANKSGIVING], "a good night still owes the list a look"
+
+
+def test_main_sweeps_on_a_night_with_nothing_scheduled(tmp_path, monkeypatch):
+    from tee_booker.booker import BookingResult
+
+    # Monday: no times configured. The night's own run is skipped, but a
+    # pending date still deserves its daily look.
+    result = BookingResult(False, message="unused")
+    nightly, calls = _main_env(monkeypatch, tmp_path, result,
+                               schedule={"monday": [], "players": 2})
+    nightly.main(["--no-wait", "--date", "2026-11-23"])
+
+    assert calls.booked_for is None, "nothing should have been booked on a Monday"
+    assert calls.swept == [None], "the sweep must still run"
+
+
+def test_main_dry_run_queues_nothing_and_sweeps_nothing(tmp_path, monkeypatch):
+    from tee_booker.booker import BookingResult
+
+    result = BookingResult(False, message="no sheet at all", no_sheet=True)
+    nightly, calls = _main_env(monkeypatch, tmp_path, result)
+    nightly.main(["--no-wait", "--dry-run", "--date", "2026-11-26"])
+
+    assert nsw.load() == {}
+    assert calls.swept == []
